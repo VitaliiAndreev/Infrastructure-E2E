@@ -129,11 +129,30 @@ function Get-E2ERunnerUsersEntry {
                 password     = $DeployPassword
             },
             # Runner service user: owns runner files and the systemd unit.
+            #
+            # 'docker' is required, not optional. The register flow asserts
+            # every runner user is in that group before it will register
+            # (GitHubRunners playbooks/tasks/_assert-docker-socket-access.yml),
+            # because container-based CI composites need /var/run/docker.sock.
+            #
+            # It has to be granted HERE specifically. Ownership of the grant is
+            # split across three repos: Vm-Provisioner installs the daemon and
+            # creates the group but leaves membership empty; Vm-Users is the
+            # single authority for supplementary groups and sets them with
+            # `append: false`, so this list IS the user's complete set and a
+            # membership added anywhere else is stripped on the next reconcile;
+            # GitHubRunners only asserts. Granting it in the runner flow would
+            # look like a fix and silently regress one reconcile later.
+            #
+            # The ordering that makes this work is Invoke-VmUsersSetup's:
+            # provisioning Phase 1 (which installs docker via the sections-2/3
+            # taxonomy block) runs BEFORE the user reconcile, so the group
+            # exists by the time this list is applied.
             [ordered]@{
                 username = 'e2erunner'
                 shell    = '/bin/bash'
                 homeDir  = '/home/e2erunner'
-                groups   = @()
+                groups   = @('docker')
             }
         )
     }
