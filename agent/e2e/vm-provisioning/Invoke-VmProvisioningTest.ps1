@@ -41,6 +41,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\assertions\dotnet\Invoke-DotnetSdkVersionChangeAssertions.ps1"
 . "$PSScriptRoot\assertions\dotnet\Invoke-DotnetToolsAssertions.ps1"
 . "$PSScriptRoot\assertions\dotnet\Invoke-NoDotnetSdkVmAssertions.ps1"
+. "$PSScriptRoot\assertions\powershell\Invoke-PowerShellInstallAssertions.ps1"
 . "$PSScriptRoot\assertions\toolchains\Invoke-ToolchainAptInstallAssertions.ps1"
 . "$PSScriptRoot\assertions\toolchains\Invoke-ToolchainBatsLibsInstallAssertions.ps1"
 . "$PSScriptRoot\assertions\toolchains\Invoke-DockerInstallAssertions.ps1"
@@ -244,6 +245,26 @@ $script:ToolchainBatsLibs = @(
 # entry switches on the whole-daemon install. Named as a constant so the config
 # projection below and any future gate check read one source.
 $script:ToolchainBaseImageDocker = 'docker'
+
+# PowerShell (section 1, host-pushed). An EXACT version: unlike javaDevKit and
+# dotnetSdk, the powershell role composes its archive name from the version and
+# rejects a loose pin, so the host-side staging step is what turns an
+# operator's '7.6' into a concrete build. Declaring the concrete build here
+# means the E2E asserts the same string end to end - config, staged tarball
+# name, and what the running interpreter reports.
+#
+# Ansible-engine only: the custom-powershell reconciler has no PowerShell
+# provider, so phase 1 gates both the config entry and its assertions on the
+# engine, the same way it gates the section-2/3 taxonomy block.
+$script:PowerShellVersion = '7.6.4'
+
+# The apt package supplying ICU on the target's Ubuntu 24.04. NOT declared in
+# the VM's section-2 apt list: the powershell role installs it itself as a hard
+# prerequisite (pwsh cannot start without ICU, and the stock image ships none).
+# It is named here only so the assertion can prove the role did so, rather than
+# the E2E quietly satisfying the dependency on the role's behalf and testing
+# nothing.
+$script:PowerShellIcuPackage = 'libicu74'
 
 # File-transfer fixture. Resolved from $PSScriptRoot so the absolute path is
 # computed on whichever workstation runs the test rather than being hard-

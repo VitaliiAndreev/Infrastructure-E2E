@@ -350,6 +350,16 @@ workstations. The file-transfer fixtures live under
 is computed per workstation. VM2's IP is derived from VM1's by
 incrementing the last octet - operator config still pins a single IP.
 
+The PowerShell assertion helper is the exception to the engine-parameter
+pattern described next: `powershell` has no reconciler provider at all, so
+that helper targets the Common-Ansible layout directly and phase 1 gates
+both the config entry and the assertion on the ansible engine - the same
+way it gates the sections-2/3 taxonomy block. Its sharpest check is that
+the ICU runtime is installed: a stock Ubuntu 24.04 image ships none and
+`pwsh` aborts at startup without it, so the assertion proves the
+`powershell` role installs that prerequisite itself rather than relying on
+an operator having declared it.
+
 The jdk / dotnet toolchain assertion helpers (under
 `agent/e2e/vm-provisioning/assertions/`) take the engine-specific parts
 of the on-disk layout as parameters: the manifest store directory, the
@@ -811,7 +821,7 @@ agent/
       Start-VmProvisioningTest.ps1           - Manual runner for the provisioning test (no polling agent)
       Start-VmProvisioningTest.bat           - Explorer launcher for Start-VmProvisioningTest.ps1
       phases/
-        Invoke-VmProvisioningPhase1.ps1      - Phase 1: install JDK 21 + dotnet + toolchains on VM1, file / envVars fixtures
+        Invoke-VmProvisioningPhase1.ps1      - Phase 1: install JDK 21 + dotnet + pwsh + toolchains on VM1, file / envVars fixtures
         Invoke-VmProvisioningPhase2.ps1      - Phase 2: uninstall on VM1, add VM2 (witness), then re-install
         Invoke-VmProvisioningPhase3.ps1      - Phase 3: version change on VM1, then remove-via-empty
         Invoke-VmProvisioningTeardown.ps1    - Deprovision + automatic Invoke-VmTeardownAssertions call
@@ -834,6 +844,8 @@ agent/
           Invoke-DotnetSdkVersionChangeAssertions.ps1 - SDK version change swapped cleanly, no parallel install
           Invoke-DotnetToolsAssertions.ps1   - dotnetTools install / version-change / uninstall post-conditions (phases 1-3)
           Invoke-NoDotnetSdkVmAssertions.ps1 - "VM2 untouched" .NET SDK witness assertions (phases 2, 3)
+        powershell/
+          Invoke-PowerShellInstallAssertions.ps1 - Section-1 (pwsh): ICU prerequisite installed, non-login PATH, interpreter starts at the pinned version, profile opt-outs, manifest (ansible flow only)
         toolchains/
           Invoke-ToolchainAptInstallAssertions.ps1 - Section-2 (apt): non-login PATH, exact dpkg pin, smoke run (ansible flow only)
           Invoke-DockerInstallAssertions.ps1 - Section-3 (docker): CLI on PATH, service active, socket answers as root
