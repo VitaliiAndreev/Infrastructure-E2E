@@ -27,6 +27,14 @@
 #   ansible branch only; phase 2 re-runs the flow against the same declaration
 #   as the idempotence proof.
 #
+#   The same ansible-only branch carries a `powershell` entry. It is section 1
+#   like the JDK and SDK - host-staged tarball, manifest-reconciled - but the
+#   reconciler has no PowerShell provider, so it too would advertise a
+#   toolchain nothing installs under custom-powershell. Co-tenanting all three
+#   host-pushed toolchains on VM1 is deliberate: it proves one staging run
+#   resolves, verifies, and serves three different upstreams without their
+#   archive names or manifests colliding.
+#
 #   The no-op rerun at the end snapshots the JDK artifact mtimes after the
 #   first provision, calls provision.ps1 again with the SAME JSON, and
 #   asserts the mtimes did not move. A regression where the JdkProvider
@@ -115,6 +123,16 @@ function Invoke-VmProvisioningPhase1 {
     # gets one, which is what makes it the witness for that targeting.
     if ($tcx.IsAnsible) {
         $entry.toolchains = New-ToolchainsTaxonomyBlock
+        # PowerShell is section 1 (host-pushed) but, like the taxonomy block
+        # above, is ansible-only: the reconciler has no PowerShell provider, so
+        # declaring it under custom-powershell would advertise a toolchain
+        # nothing installs. Co-tenanting it with the JDK and .NET SDK on VM1 is
+        # the point - three host-pushed toolchains through one staging run
+        # proves the stage step resolves and serves them all without their
+        # archive names or manifests colliding.
+        $entry.powershell = [ordered]@{
+            version = $script:PowerShellVersion
+        }
     }
     # Mixed files array: one single entry + one bulk entry. JSON order is
     # preserved by the per-entry dispatch in Invoke-VmPostProvisioning;
@@ -228,12 +246,21 @@ function Invoke-VmProvisioningPhase1 {
             -Command     $script:DotnetToolCommand `
             @toolParams @toolInstallExtra
 
-        # Sections 2/3 end state, asserted only where it exists: the block is
-        # authored above under ansible alone, so under custom-powershell there
-        # is nothing installed to check. Runs after the section-1 assertions so
-        # a jdk / dotnet regression - the older, more load-bearing path -
-        # surfaces first.
+        # The ansible-only toolchains, asserted only where they exist: both
+        # PowerShell and the sections-2/3 block are authored above under
+        # ansible alone, so under custom-powershell there is nothing installed
+        # to check. Runs after the jdk / dotnet assertions so a regression in
+        # that older, more load-bearing path surfaces first.
         if ($tcx.IsAnsible) {
+            # PowerShell first among these: it is the section-1 sibling of the
+            # jdk / dotnet checks just above, so it belongs with them rather
+            # than after the section-2/3 group.
+            Invoke-PowerShellInstallAssertions `
+                -SshClient        $sshClient `
+                -VmName           $Vm1Def.vmName `
+                -RequestedVersion $script:PowerShellVersion `
+                -IcuPackage       $script:PowerShellIcuPackage
+
             Invoke-ToolchainAptInstallAssertions `
                 -SshClient $sshClient `
                 -VmName    $Vm1Def.vmName `
