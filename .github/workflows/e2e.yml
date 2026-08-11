@@ -115,6 +115,10 @@ jobs:
           FLOW_SPEC: ${{ inputs.flow-spec }}
         run: |
           flow_spec="$FLOW_SPEC"
+          # Own-repo PR fallback. It names only the two layers whose default
+          # predates the axis table; the agent defaults every absent key to
+          # 'ansible', so an omitted toolchainsFlow / filesFlow runs the same
+          # engine a spelled-out key would.
           if [ -z "$flow_spec" ]; then
             flow_spec='{"usersFlow":"ansible","runnersFlow":"ansible"}'
           fi
@@ -122,7 +126,8 @@ jobs:
           # jq --argjson parses flow_spec as JSON and embeds it as the
           # deployment payload object; an invalid spec fails the step here
           # rather than silently reaching the agent. payload travels back to
-          # the polling agent, which reads usersFlow / runnersFlow from it.
+          # the polling agent, which reads usersFlow / runnersFlow /
+          # toolchainsFlow / filesFlow from it.
           # auto_merge:false - no branch merge is relevant here.
           # required_contexts:[] - bypasses commit-status checks that would
           # otherwise block deployment creation on a repo with branch protection.
