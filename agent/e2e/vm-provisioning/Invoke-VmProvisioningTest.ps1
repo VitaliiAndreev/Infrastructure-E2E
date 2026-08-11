@@ -54,7 +54,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 # Engine dispatchers (custom-powershell in-line path vs the Ansible
 # provision-files.sh / provision-toolchains.sh drivers). Dot-sourced before the
 # phase files so they can call both. Files first, matching the order the phases
-# call them in.
+# call them in. Each pulls in the shared Invoke-VmProvisionerAnsibleOps itself.
 . "$PSScriptRoot\Set-VmFilesForTest.ps1"
 . "$PSScriptRoot\Set-VmToolchainsForTest.ps1"
 # Shell-out timing wrapper (feature 88 C2). Phase 1 wraps its toolchains

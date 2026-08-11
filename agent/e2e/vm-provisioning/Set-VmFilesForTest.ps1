@@ -27,6 +27,11 @@
     after Initialize-E2EEnvironment and the secret cmdlets are loaded.
 #>
 
+# The WSL shell-out itself, shared with Set-VmToolchainsForTest. Dot-sourced
+# here rather than by the orchestrator alone so this file's unit tests load
+# their dependency by sourcing only the file under test.
+. "$PSScriptRoot\Invoke-VmProvisionerAnsibleOps.ps1"
+
 # ---------------------------------------------------------------------------
 # Set-VmFilesForTest
 #   The single switch point the phases call after provision.ps1 to transport the
@@ -81,27 +86,11 @@ function Set-VmFilesForTest {
     # provision-files.sh reads the per-VM `files` arrays straight from
     # VmProvisionerConfig (written by the phase, left untouched by provision.ps1
     # -SkipFiles). There is no separate desired-state vault: VmProvisionerConfig
-    # is the single source of truth for both engines.
-    #
-    # Push-Location + `wsl -d <distro> --`, SECRET_SUFFIX inheritance through
-    # WSLENV, and the `2>&1 | Out-Host` that stops the native command's output
-    # from folding into this function's pipeline: all identical to
-    # Set-VmToolchainsForTest, which carries the full rationale for each.
-    #
-    # Per-task timing needs nothing here either: provision-files.sh arms the
-    # same timing_tree emitter, so when the caller wraps this in a child-process
-    # span its rows graft under that span automatically.
-    Push-Location $ProvisionerPath
-    try {
-        Write-Host "Provisioning files via ansible flow (WSL '$WslDistro') ..." `
-            -ForegroundColor Magenta
-        & wsl -d $WslDistro -- ./hyper-v/ubuntu/Ansible/ops/provision-files.sh 2>&1 |
-            Out-Host
-    }
-    finally {
-        Pop-Location
-    }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Ansible provision-files.sh exited $LASTEXITCODE"
-    }
+    # is the single source of truth for both engines - which is why nothing
+    # about the desired state is passed across the boundary here.
+    Invoke-VmProvisionerAnsibleOps `
+        -ProvisionerPath $ProvisionerPath `
+        -WslDistro       $WslDistro `
+        -OpsScript       'provision-files.sh' `
+        -Activity        'files'
 }
