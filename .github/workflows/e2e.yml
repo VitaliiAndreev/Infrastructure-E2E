@@ -22,10 +22,12 @@ on:
       flow-spec:
         description: >-
           JSON selecting which implementation each layer runs, e.g.
-          {"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}.
-          Values are 'ansible' or 'custom-powershell'. All three layers
-          default to 'ansible'; omit a key to take its default or set it to
-          'custom-powershell' to exercise the PowerShell engine.
+          {"usersFlow":"ansible","runnersFlow":"ansible",
+          "toolchainsFlow":"ansible","filesFlow":"ansible"}.
+          Values are 'ansible' or 'custom-powershell'. All four layers
+          default to 'ansible'; omit a key to take its default (the E2EConfig
+          vault value, else the agent's) or set it to 'custom-powershell' to
+          exercise the PowerShell engine.
         required: false
         type: string
         default: '{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}'
@@ -34,10 +36,12 @@ on:
       flow-spec:
         description: >-
           JSON selecting which implementation each layer runs. Callers pass
-          {"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"..."} with
-          values 'ansible' or 'custom-powershell'. All three layers default
-          to 'ansible'. Any key may be omitted to take that layer's default;
-          set a key to 'custom-powershell' to exercise the PowerShell engine.
+          {"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"...",
+          "filesFlow":"..."} with values 'ansible' or
+          'custom-powershell'. All four layers default
+          to 'ansible'. Any key may be omitted to take that layer's default
+          (the E2EConfig vault value, else the agent's); set a key to
+          'custom-powershell' to exercise the PowerShell engine.
         required: false
         type: string
         default: '{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}'
