@@ -70,6 +70,8 @@ function Invoke-VmProvisioningPhase2 {
     }
 
     $tcx = Get-ToolchainPhaseContext -Config $Config
+    # Independent file-transport engine axis - see the note in phase 1.
+    $fcx = Get-FilesPhaseContext -Config $Config
     $jdkParams        = $tcx.Params.Jdk
     $sdkParams        = $tcx.Params.Sdk
     $toolParams       = $tcx.Params.Tools
@@ -147,7 +149,18 @@ function Invoke-VmProvisioningPhase2 {
     Write-Host 'Phase 2a: provisioning (uninstall via absent on VM1, create VM2) ...' `
         -ForegroundColor Magenta
     Measure-ChildProcessTimingSpan -Tree $Tree -Name '2a provision' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx
+    }
+
+    # Ansible flow: re-transport VM1's carried-forward `files` array so the
+    # idempotence assertions below have a second pass to validate (no-op under
+    # custom-powershell, which re-copied inside provision.ps1). Precedes the
+    # toolchains driver, as at every site.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '2a files' -Action {
+        Set-VmFilesForTest `
+            -FilesFlow       $fcx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $fcx.WslDistro
     }
 
     # Ansible flow: drive the uninstall by reconciling the (now empty) per-VM
@@ -359,7 +372,16 @@ function Invoke-VmProvisioningPhase2 {
     Write-Host 'Phase 2b: provisioning (re-add JDK on VM1) ...' `
         -ForegroundColor Magenta
     Measure-ChildProcessTimingSpan -Tree $Tree -Name '2b provision' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx
+    }
+
+    # Ansible flow: `files` is unchanged again in 2b, so this pass is a second
+    # idempotence probe on the transport (no-op under custom-powershell).
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '2b files' -Action {
+        Set-VmFilesForTest `
+            -FilesFlow       $fcx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $fcx.WslDistro
     }
 
     # Ansible flow: reinstall by reconciling VM1's per-VM toolchain state from

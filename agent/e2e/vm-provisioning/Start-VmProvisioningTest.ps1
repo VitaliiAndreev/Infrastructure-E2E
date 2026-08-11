@@ -80,10 +80,19 @@ param(
     [ValidateSet('custom-powershell', 'ansible')]
     [string] $ToolchainsFlow = 'ansible',
 
+    # Which engine transports the per-VM `files` entries. 'ansible' (default)
+    # drives Infrastructure-Vm-Provisioner's provision-files.sh (requires
+    # -WslDistro); 'custom-powershell' keeps provision.ps1's in-line transport
+    # copying them. Independent of -ToolchainsFlow, and the same file-transfer
+    # assertions run for both. See Set-VmFilesForTest.
+    [ValidateSet('custom-powershell', 'ansible')]
+    [string] $FilesFlow = 'ansible',
+
     # WSL distro the Ansible bridge runs inside. Required when
-    # -ToolchainsFlow ansible; ignored otherwise. Passed via `wsl -d <name>`
-    # so the run does not depend on the workstation's WSL default (Docker
-    # Desktop silently moves it to its no-bash 'docker-desktop' distro).
+    # -ToolchainsFlow or -FilesFlow is ansible; ignored otherwise. Passed via
+    # `wsl -d <name>` so the run does not depend on the workstation's WSL
+    # default (Docker Desktop silently moves it to its no-bash
+    # 'docker-desktop' distro).
     [string] $WslDistro = ''
 )
 
@@ -99,6 +108,7 @@ $ErrorActionPreference = 'Stop'
 Invoke-VmProvisioningTest -Config ([PSCustomObject]@{
     ProvisionerPath = $ProvisionerPath
     ToolchainsFlow  = $ToolchainsFlow
+    FilesFlow       = $FilesFlow
     WslDistro       = $WslDistro
     TestVm          = [PSCustomObject]@{
         ubuntuVersion         = $UbuntuVersion

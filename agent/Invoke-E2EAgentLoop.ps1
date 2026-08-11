@@ -99,17 +99,33 @@ function Invoke-E2EAgentLoop {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $ToolchainsFlow = 'ansible',
 
+        # Selects which engine transports each VM's operator-declared `files`
+        # entries during the provisioning phases. 'ansible' (the default)
+        # drives Infrastructure-Vm-Provisioner's
+        # hyper-v/ubuntu/Ansible/ops/provision-files.sh against the
+        # Common-Ansible vm_files / files_report roles, pushing bytes through
+        # the SSH channel. 'custom-powershell' opts back in to provision.ps1's
+        # in-line transport, which serves the same files off a host-side
+        # HttpListener the VM curls from. Both engines land the same on-VM end
+        # state, so one shared set of file-transfer assertions runs across both.
+        # Both are permanent first-class peers.
+        [Parameter()]
+        [ValidateSet('custom-powershell', 'ansible')]
+        [string] $FilesFlow = 'ansible',
+
         # Name of the WSL distro to run the Ansible bridge inside. Passed
         # via `wsl -d <name>` so the agent does not depend on the
         # workstation's WSL default - Docker Desktop's installer silently
         # changes the default to its no-bash `docker-desktop` engine
         # distro, which broke this code path until the explicit -d was
         # added. Required whenever any of UsersFlow / RunnersFlow /
-        # ToolchainsFlow is 'ansible' - all three default to 'ansible', so
-        # WslDistro is required unless a layer is set to custom-powershell.
+        # ToolchainsFlow / FilesFlow is 'ansible' - all four default to
+        # 'ansible', so WslDistro is required unless a layer is set to
+        # custom-powershell.
         # Each ansible
         # wrapper (create/remove-users.sh in Vm-Users, register-runners.sh
-        # in GitHubRunners, provision-toolchains.sh in Vm-Provisioner)
+        # in GitHubRunners, provision-toolchains.sh and provision-files.sh in
+        # Vm-Provisioner)
         # self-resolves the Common-Ansible substrate as a sibling checkout,
         # so no Common-Ansible path is threaded through this loop.
         [Parameter()]
@@ -191,6 +207,7 @@ function Invoke-E2EAgentLoop {
     if ($UsersFlow      -eq 'ansible') { $ansibleFlows += 'UsersFlow' }
     if ($RunnersFlow    -eq 'ansible') { $ansibleFlows += 'RunnersFlow' }
     if ($ToolchainsFlow -eq 'ansible') { $ansibleFlows += 'ToolchainsFlow' }
+    if ($FilesFlow      -eq 'ansible') { $ansibleFlows += 'FilesFlow' }
     if ($ansibleFlows.Count -gt 0) {
         $flowList = $ansibleFlows -join '/'
         if (-not $WslDistro) {
@@ -275,6 +292,7 @@ function Invoke-E2EAgentLoop {
                 $effectiveUsersFlow      = $UsersFlow
                 $effectiveRunnersFlow    = $RunnersFlow
                 $effectiveToolchainsFlow = $ToolchainsFlow
+                $effectiveFilesFlow      = $FilesFlow
                 if ($deployment.PSObject.Properties['payload'] -and $deployment.payload) {
                     $payload = $deployment.payload
                     # GitHub returns the payload as a parsed object when it
@@ -289,9 +307,13 @@ function Invoke-E2EAgentLoop {
                     if ($payload.PSObject.Properties['toolchainsFlow'] -and $payload.toolchainsFlow) {
                         $effectiveToolchainsFlow = $payload.toolchainsFlow
                     }
+                    if ($payload.PSObject.Properties['filesFlow'] -and $payload.filesFlow) {
+                        $effectiveFilesFlow = $payload.filesFlow
+                    }
                     Write-Host ("Flow spec from payload: UsersFlow=$effectiveUsersFlow " +
                         "RunnersFlow=$effectiveRunnersFlow " +
-                        "ToolchainsFlow=$effectiveToolchainsFlow") -ForegroundColor Cyan
+                        "ToolchainsFlow=$effectiveToolchainsFlow " +
+                        "FilesFlow=$effectiveFilesFlow") -ForegroundColor Cyan
                 }
 
                 # Validate the effective flows. An unknown value fails loud
@@ -304,14 +326,15 @@ function Invoke-E2EAgentLoop {
                 foreach ($pair in @(
                         @{ Name = 'usersFlow';      Value = $effectiveUsersFlow },
                         @{ Name = 'runnersFlow';    Value = $effectiveRunnersFlow },
-                        @{ Name = 'toolchainsFlow'; Value = $effectiveToolchainsFlow })) {
+                        @{ Name = 'toolchainsFlow'; Value = $effectiveToolchainsFlow },
+                        @{ Name = 'filesFlow';      Value = $effectiveFilesFlow })) {
                     if ($pair.Value -notin @('custom-powershell', 'ansible')) {
                         throw ("Invalid $($pair.Name) '$($pair.Value)' in deployment " +
                             "payload; expected 'custom-powershell' or 'ansible'.")
                     }
                 }
                 if ($effectiveUsersFlow -eq 'ansible' -or $effectiveRunnersFlow -eq 'ansible' -or
-                    $effectiveToolchainsFlow -eq 'ansible') {
+                    $effectiveToolchainsFlow -eq 'ansible' -or $effectiveFilesFlow -eq 'ansible') {
                     if (-not $WslDistro) {
                         throw "Effective flow is 'ansible' but WslDistro is not set."
                     }
@@ -328,6 +351,7 @@ function Invoke-E2EAgentLoop {
                     RunnersPath           = $RunnersPath
                     RunnersFlow           = $effectiveRunnersFlow
                     ToolchainsFlow        = $effectiveToolchainsFlow
+                    FilesFlow             = $effectiveFilesFlow
                     HostTarballCachePath  = $HostTarballCachePath
                     Owner                 = $Owner
                     TestVm                = $TestVm

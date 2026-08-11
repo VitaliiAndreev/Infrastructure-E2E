@@ -51,9 +51,11 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\assertions\env-vars\Invoke-EnvVarsAppliedAssertions.ps1"
 . "$PSScriptRoot\assertions\env-vars\Invoke-EnvVarsRemovedAssertions.ps1"
 . "$PSScriptRoot\Resolve-RouterIpFromKvp.ps1"
-# Toolchain-flow dispatcher (custom-powershell reconciler vs the Ansible
-# provision-toolchains.sh driver). Dot-sourced before the phase files so
-# they can call Set-VmToolchainsForTest.
+# Engine dispatchers (custom-powershell in-line path vs the Ansible
+# provision-files.sh / provision-toolchains.sh drivers). Dot-sourced before the
+# phase files so they can call both. Files first, matching the order the phases
+# call them in.
+. "$PSScriptRoot\Set-VmFilesForTest.ps1"
 . "$PSScriptRoot\Set-VmToolchainsForTest.ps1"
 # Shell-out timing wrapper (feature 88 C2). Phase 1 wraps its toolchains
 # shell-out in a nested child-process span (feature 88 E2), so the helper
@@ -732,18 +734,52 @@ function Get-ToolchainPhaseContext {
     }
 }
 
-# Runs the provisioner for a phase. Under the ansible toolchain flow it passes
-# -SkipToolchains so provision.ps1's in-repo reconciler leaves the toolchains
-# to the separate provision-toolchains.sh driver (Set-VmToolchainsForTest);
-# under custom-powershell the reconciler installs them in-line. The per-VM
-# toolchain fields live in VmProvisionerConfig either way - only this one
-# argument differs by engine, so centralising it keeps every phase's
-# provisioning call identical.
+# StrictMode-safe read of the session's FilesFlow off $Config. Peer of
+# Resolve-ToolchainsFlow, including the fallback: a Config that omits the
+# property lands on the same engine the agent loop defaults to.
+function Resolve-FilesFlow {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [PSCustomObject] $Config)
+
+    if ($Config.PSObject.Properties['FilesFlow'] -and $Config.FilesFlow) {
+        return $Config.FilesFlow
+    }
+    return 'ansible'
+}
+
+# One-call context bundle each phase resolves at its top, mirroring
+# Get-ToolchainPhaseContext. Shorter by one field: the file-transfer assertions
+# are engine-agnostic (same target path, root:root, 0644 under either engine),
+# so there is no per-engine assertion param set to resolve - only the flow, the
+# boolean the branch points read, and the WSL distro the ansible driver needs.
+function Get-FilesPhaseContext {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [PSCustomObject] $Config)
+
+    $flow = Resolve-FilesFlow -Config $Config
+    return [PSCustomObject]@{
+        Flow      = $flow
+        IsAnsible = $flow -eq 'ansible'
+        WslDistro = if ($Config.PSObject.Properties['WslDistro']) {
+            $Config.WslDistro
+        } else { $null }
+    }
+}
+
+# Runs the provisioner for a phase. Each ansible engine axis stands the
+# matching in-line provision.ps1 step down so the separate Ansible driver owns
+# it instead: -SkipToolchains leaves the toolchains to provision-toolchains.sh
+# (Set-VmToolchainsForTest), -SkipFiles leaves the `files` transport to
+# provision-files.sh (Set-VmFilesForTest). Under custom-powershell
+# provision.ps1 does that half in-line. The per-VM desired state lives in
+# VmProvisionerConfig either way - only these two arguments differ by engine, so
+# centralising them keeps every phase's provisioning call identical.
 function Invoke-ProvisionerForPhase {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [PSCustomObject] $Config,
-        [Parameter(Mandatory)] [PSCustomObject] $Tcx
+        [Parameter(Mandatory)] [PSCustomObject] $Tcx,
+        [Parameter(Mandatory)] [PSCustomObject] $Fcx
     )
 
     # Hashtable splat, NOT an array. Array splatting passes every element
@@ -754,6 +790,7 @@ function Invoke-ProvisionerForPhase {
     # parameter, and a $true value drives the [switch].
     $provArgs = @{ SecretSuffix = $script:E2ETestSecretSuffix }
     if ($Tcx.IsAnsible) { $provArgs['SkipToolchains'] = $true }
+    if ($Fcx.IsAnsible) { $provArgs['SkipFiles']      = $true }
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" @provArgs
 }
 
