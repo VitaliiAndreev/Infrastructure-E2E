@@ -54,6 +54,11 @@ Describe 'Invoke-VmProvisioningPhase2 engine dispatch' {
         Mock Set-VmToolchainsForTest    { }
         Mock Set-VmEnvVarsForTest       { }
         Mock Invoke-EnvVarsEngineHandoff { }
+        # Probe planting is gated on the predicate and reaches the VM over SSH;
+        # both are mocked so this suite stays about dispatch, not about the
+        # cross-engine case (covered where the hand-off itself is tested).
+        Mock Test-EnvVarsHandoffAvailable { $true }
+        Mock Add-EtcEnvironmentBlockProbe { }
 
         # Only the fields the phase reads before its first Mocked boundary:
         # New-VmEntryBase reads TestVm.ubuntuVersion / vmConfigPath / vhdPath

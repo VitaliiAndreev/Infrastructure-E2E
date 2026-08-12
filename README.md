@@ -340,7 +340,11 @@ run.
    the same declaration and the applied-assertions run again. They
    require exactly one `BEGIN` / `END` pair and exactly one line per
    entry, so an engine that appended its own block instead of
-   replacing the existing one fails here. That is the property that
+   replacing the existing one fails here. A probe line is planted
+   inside the block first and required to be gone afterwards: every
+   other assertion in that set would also pass on a run where the
+   second engine never executed, so the probe is the one that makes a
+   no-op and a working hand-off look different. That is the property that
    makes the two interchangeable at all, and a single-engine run
    cannot observe it. It is skipped, with a printed reason, when the
    opposite engine is Ansible and the session configured no
@@ -507,13 +511,18 @@ which is `ansible` for all five layers:
 
 | Caller repo | `flow-spec` | Tests |
 |---|---|---|
-| `Common-Ansible` (users/runners) | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
-| `Common-Ansible` (toolchains) | `{"toolchainsFlow":"ansible"}` | `provision-toolchains.sh` installs jdk / dotnet; the shared install / swap / uninstall assertions run against it |
 | `Infrastructure-Vm-Users` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible","envVarsFlow":"ansible"}` | the Ansible users flow; runner, toolchain, files + env layers cascade on the full Ansible stack |
 | `Infrastructure-GitHubRunners` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible","envVarsFlow":"ansible"}` | the Ansible runner-registration flow; users, toolchain, files + env layers cascade. The env layer is pinned rather than defaulted because this repo owns the delivery half of it - `runner_service`'s systemd drop-in |
 | `Infrastructure-Vm-Provisioner` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible","envVarsFlow":"ansible"}` | the Ansible toolchain flow via `provision-toolchains.sh`, the Ansible `files` transport via `provision-files.sh`, and the Ansible `envVars` reconcile via `provision-env.sh`; users + runner layers cascade |
 
-All four layers default to `ansible`. A caller that omits a key - or a
+`Common-Ansible` is absent from that table on purpose: it has no caller
+workflow, so nothing in it passes a `flow-spec`. Its role changes reach E2E
+only through the three consumer repos above, whose PRs exercise the substrate
+roles as a side effect of exercising their own flows. A substrate-only change
+(a new role, a rule tightened in `vm_env_vars`) therefore has no gate of its
+own here - it is covered when a consumer next opens a PR, not when it merges.
+
+All five layers default to `ansible`. A caller that omits a key - or a
 manual `workflow_dispatch` left at its default - runs that layer on the
 Ansible path, and a repo that wants the PowerShell engine opts that layer
 down to `custom-powershell` through its `flow-spec`.

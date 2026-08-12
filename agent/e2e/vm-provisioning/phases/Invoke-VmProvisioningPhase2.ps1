@@ -292,6 +292,28 @@ function Invoke-VmProvisioningPhase2 {
     # other half of the claim - the second engine must own its block only.
     #
     # This is the only place in the suite where both engines touch one host.
+    #
+    # The probe below is what stops the check being vacuous. Every assertion
+    # after the hand-off would pass on a run where the second engine never
+    # executed - they re-verify a state that is already correct. Planting a
+    # line inside the block first means the engine has to find the other's
+    # markers and rewrite between them for the run to come out clean, so a
+    # no-op and a working hand-off stop looking alike.
+    # Asked before planting, not after: a probe planted for a hand-off that
+    # then skips would be left inside the block for later phases to trip over.
+    if (Test-EnvVarsHandoffAvailable -Ecx $ecx) {
+        Write-Host 'Phase 2a: planting the hand-off probe inside the managed block ...' `
+            -ForegroundColor Magenta
+        Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
+            param($sshClient)
+            Add-EtcEnvironmentBlockProbe `
+                -SshClient $sshClient `
+                -VmName    $Vm1Def.vmName `
+                -BlockName $script:EnvVarsBlockName `
+                -ProbeLine $script:EnvVarsHandoffProbeLine
+        }
+    }
+
     $handoffFlow = Invoke-EnvVarsEngineHandoff -Config $Config -Ecx $ecx
 
     if ($handoffFlow) {
@@ -299,6 +321,12 @@ function Invoke-VmProvisioningPhase2 {
             -ForegroundColor Magenta
         Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
             param($sshClient)
+            # The probe first: if this engine did not run, everything below
+            # still passes, so this is the assertion carrying the case.
+            Assert-EtcEnvironmentLineAbsent `
+                -SshClient $sshClient -VmName $Vm1Def.vmName `
+                -Marker    $script:EnvVarsHandoffProbeLine
+
             Invoke-EnvVarsAppliedAssertions `
                 -SshClient          $sshClient `
                 -VmName             $Vm1Def.vmName `

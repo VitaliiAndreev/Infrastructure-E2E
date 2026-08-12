@@ -401,6 +401,29 @@ Describe 'Get-EnvVarsPhaseContext' {
     }
 }
 
+Describe 'Test-EnvVarsHandoffAvailable' {
+    # Its own predicate because the caller must know the answer BEFORE the
+    # hand-off runs - it plants a probe inside the managed block first, and a
+    # probe planted for a hand-off that then skips would be left on the host.
+
+    It 'is available for an ansible session even with no distro' {
+        # The opposite engine there is set-env-vars.ps1, a script on the
+        # provisioner path - no bridge involved.
+        Test-EnvVarsHandoffAvailable -Ecx ([pscustomobject]@{
+            IsAnsible = $true; WslDistro = $null }) | Should -BeTrue
+    }
+
+    It 'is available for a custom-powershell session that has a distro' {
+        Test-EnvVarsHandoffAvailable -Ecx ([pscustomobject]@{
+            IsAnsible = $false; WslDistro = 'Ubuntu-24.04' }) | Should -BeTrue
+    }
+
+    It 'is unavailable for a custom-powershell session with no distro' {
+        Test-EnvVarsHandoffAvailable -Ecx ([pscustomobject]@{
+            IsAnsible = $false; WslDistro = $null }) | Should -BeFalse
+    }
+}
+
 Describe 'Invoke-EnvVarsEngineHandoff' {
     # The cross-engine step: whichever engine the session used, this runs the
     # OTHER one over the same block so the caller can re-assert that it was

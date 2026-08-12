@@ -305,6 +305,14 @@ $script:EnvVarsFooHome    = [PSCustomObject]@{ Name = 'FOO_HOME'; Value = '/opt/
 $script:EnvVarsBarVar     = [PSCustomObject]@{ Name = 'BAR_VAR';  Value = 'baz' }
 $script:EnvVarsMarkerName = 'MARKER_OUTSIDE'
 $script:EnvVarsMarkerLine = "$($script:EnvVarsMarkerName)=`"untouched`""
+# Planted INSIDE the managed block immediately before the engine hand-off, and
+# required to be gone after it. Without it the hand-off assertions pass on a
+# run where the second engine did nothing at all - they only re-check an end
+# state that was already correct. The probe gives that engine work it must do:
+# removing a line it did not declare requires finding the other engine's
+# markers and rewriting their content, which IS the property under test.
+$script:EnvVarsHandoffProbeName = 'ZZZ_HANDOFF_PROBE'
+$script:EnvVarsHandoffProbeLine = "$($script:EnvVarsHandoffProbeName)=`"planted`""
 
 # Phase 2's E6 assertion compares /etc/environment's mtime against this
 # snapshot, taken at the end of phase 1 AFTER the marker is seeded so
@@ -815,6 +823,23 @@ function Get-EnvVarsPhaseContext {
 # END marker and exactly one line per entry, so a second appended block fails
 # it. Nothing bespoke is needed - only the second engine's run.
 #
+# Whether the opposite engine can be driven at all in this session.
+#
+# Its own predicate rather than a branch inside the hand-off, because the
+# caller has to know the answer BEFORE the hand-off runs: it plants a probe
+# inside the managed block first, and a probe planted for a hand-off that then
+# skips would be left on the host for later phases to trip over.
+#
+# The PowerShell direction is always available - it is a script sitting on the
+# provisioner path. The Ansible direction needs a WSL bridge, and a
+# custom-powershell session is under no obligation to have configured one.
+function Test-EnvVarsHandoffAvailable {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [PSCustomObject] $Ecx)
+
+    return $Ecx.IsAnsible -or [bool]$Ecx.WslDistro
+}
+
 # Each direction is one command, because each engine has a standalone entry
 # point: provision-env.sh on the Ansible side, set-env-vars.ps1 on the
 # PowerShell side. The latter was added for this - before it, the PowerShell
@@ -837,11 +862,8 @@ function Invoke-EnvVarsEngineHandoff {
         return 'custom-powershell'
     }
 
-    # Session wrote in-line; hand the block to the Ansible engine. The driver
-    # needs a bridge, and a custom-powershell session is not obliged to have
-    # configured one - say so and skip rather than failing a run over a
-    # cross-engine check the session was never set up for.
-    if (-not $Ecx.WslDistro) {
+    # Session wrote in-line; hand the block to the Ansible engine.
+    if (-not (Test-EnvVarsHandoffAvailable -Ecx $Ecx)) {
         Write-Host 'Engine hand-off: SKIPPED (no WslDistro configured for this session).' `
             -ForegroundColor Yellow
         return $null
