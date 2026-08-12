@@ -509,8 +509,8 @@ which is `ansible` for all five layers:
 |---|---|---|
 | `Common-Ansible` (users/runners) | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
 | `Common-Ansible` (toolchains) | `{"toolchainsFlow":"ansible"}` | `provision-toolchains.sh` installs jdk / dotnet; the shared install / swap / uninstall assertions run against it |
-| `Infrastructure-Vm-Users` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible"}` | the Ansible users flow; runner, toolchain + files layers cascade on the full Ansible stack |
-| `Infrastructure-GitHubRunners` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible"}` | the Ansible runner-registration flow; users, toolchain + files layers cascade |
+| `Infrastructure-Vm-Users` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible","envVarsFlow":"ansible"}` | the Ansible users flow; runner, toolchain, files + env layers cascade on the full Ansible stack |
+| `Infrastructure-GitHubRunners` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible","envVarsFlow":"ansible"}` | the Ansible runner-registration flow; users, toolchain, files + env layers cascade. The env layer is pinned rather than defaulted because this repo owns the delivery half of it - `runner_service`'s systemd drop-in |
 | `Infrastructure-Vm-Provisioner` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible","envVarsFlow":"ansible"}` | the Ansible toolchain flow via `provision-toolchains.sh`, the Ansible `files` transport via `provision-files.sh`, and the Ansible `envVars` reconcile via `provision-env.sh`; users + runner layers cascade |
 
 All four layers default to `ansible`. A caller that omits a key - or a
