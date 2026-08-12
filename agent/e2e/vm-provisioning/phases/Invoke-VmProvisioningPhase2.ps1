@@ -72,6 +72,10 @@ function Invoke-VmProvisioningPhase2 {
     $tcx = Get-ToolchainPhaseContext -Config $Config
     # Independent file-transport engine axis - see the note in phase 1.
     $fcx = Get-FilesPhaseContext -Config $Config
+    # Environment-block engine for this run, a third independent axis. Peer of
+    # $fcx; see phase 1 for why the managed block is the one artefact both
+    # engines can own in turn.
+    $ecx = Get-EnvVarsPhaseContext -Config $Config
     $jdkParams        = $tcx.Params.Jdk
     $sdkParams        = $tcx.Params.Sdk
     $toolParams       = $tcx.Params.Tools
@@ -149,7 +153,7 @@ function Invoke-VmProvisioningPhase2 {
     Write-Host 'Phase 2a: provisioning (uninstall via absent on VM1, create VM2) ...' `
         -ForegroundColor Magenta
     Measure-ChildProcessTimingSpan -Tree $Tree -Name '2a provision' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx -Ecx $ecx
     }
 
     # Ansible flow: re-transport VM1's carried-forward `files` array so the
@@ -171,6 +175,13 @@ function Invoke-VmProvisioningPhase2 {
             -ToolchainsFlow  $tcx.Flow `
             -ProvisionerPath $Config.ProvisionerPath `
             -WslDistro       $tcx.WslDistro
+    }
+
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '2a env' -Action {
+        Set-VmEnvVarsForTest `
+            -EnvVarsFlow     $ecx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $ecx.WslDistro
     }
 
     Write-Host "Phase 2a: verifying uninstall-via-absent on $($Vm1Def.vmName) ..." `
@@ -269,6 +280,40 @@ function Invoke-VmProvisioningPhase2 {
         # desired != existing branch).
         Assert-EtcEnvironmentMtimeAdvanced `
             -SshClient $sshClient -VmName $Vm1Def.vmName
+    }
+
+    # E9: engine hand-off. Everything above ran under ONE engine, so nothing
+    # yet proves the claim that makes the two interchangeable - that each
+    # replaces the other's block in place instead of appending a second one.
+    # Run the opposite engine once over the same unchanged declaration and
+    # re-assert: the applied-assertions set requires exactly one BEGIN / END
+    # pair and exactly one line per entry, so a second block fails it. The
+    # out-of-block MARKER line is re-checked by the same call, which is the
+    # other half of the claim - the second engine must own its block only.
+    #
+    # This is the only place in the suite where both engines touch one host.
+    $handoffFlow = Invoke-EnvVarsEngineHandoff -Config $Config -Ecx $ecx
+
+    if ($handoffFlow) {
+        Write-Host "Phase 2a: verifying the '$handoffFlow' engine adopted the existing block ..." `
+            -ForegroundColor Magenta
+        Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
+            param($sshClient)
+            Invoke-EnvVarsAppliedAssertions `
+                -SshClient          $sshClient `
+                -VmName             $Vm1Def.vmName `
+                -BlockName          $script:EnvVarsBlockName `
+                -ExpectedEntries    @($script:EnvVarsFooHome) `
+                -ExpectedMarkerLine $script:EnvVarsMarkerLine
+
+            # The dropped entry must still be gone: an engine that "adopted"
+            # the block by appending its own would reintroduce nothing here,
+            # but one that mis-parsed the markers and rewrote from stale
+            # desired-state would.
+            Assert-EtcEnvironmentLineAbsent `
+                -SshClient $sshClient -VmName $Vm1Def.vmName `
+                -Pattern   "^$($script:EnvVarsBarVar.Name)="
+        }
     }
 
     Write-Host "Phase 2a: verifying VM2 has no JDK / dotnet artifacts ($($Vm2Def.vmName)) ..." `
@@ -372,7 +417,7 @@ function Invoke-VmProvisioningPhase2 {
     Write-Host 'Phase 2b: provisioning (re-add JDK on VM1) ...' `
         -ForegroundColor Magenta
     Measure-ChildProcessTimingSpan -Tree $Tree -Name '2b provision' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx -Ecx $ecx
     }
 
     # Ansible flow: `files` is unchanged again in 2b, so this pass is a second
@@ -392,6 +437,13 @@ function Invoke-VmProvisioningPhase2 {
             -ToolchainsFlow  $tcx.Flow `
             -ProvisionerPath $Config.ProvisionerPath `
             -WslDistro       $tcx.WslDistro
+    }
+
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '2b env' -Action {
+        Set-VmEnvVarsForTest `
+            -EnvVarsFlow     $ecx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $ecx.WslDistro
     }
 
     Write-Host "Phase 2b: verifying JDK $($script:JdkReinstallVersion) + dotnet SDK $($script:DotnetReinstallResolvedVersion) reinstalled on $($Vm1Def.vmName) ..." `

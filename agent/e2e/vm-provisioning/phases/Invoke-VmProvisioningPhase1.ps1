@@ -77,6 +77,10 @@ function Invoke-VmProvisioningPhase1 {
     # from $tcx: a session can drive files through Ansible and toolchains
     # through the reconciler, or the reverse.
     $fcx = Get-FilesPhaseContext -Config $Config
+    # Environment-block engine for this run, a third independent axis: the
+    # managed block is the one artefact BOTH engines write in the same place
+    # and the same format, so a session may drive it either way.
+    $ecx = Get-EnvVarsPhaseContext -Config $Config
     # Splat-ready engine params for this phase's assertions (reconciler
     # defaults under custom-powershell; the common-ansible store + prefix
     # under ansible). Splatting needs simple variables, hence the locals.
@@ -176,7 +180,7 @@ function Invoke-VmProvisioningPhase1 {
     # the report then shows VM creation SKIPPED and buries the ~real creation
     # cost as unaccounted parent time (feature 88 E2).
     Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx -Ecx $ecx
     }
 
     # provision.ps1 ran in its own scope and the discovered router IP
@@ -220,6 +224,21 @@ function Invoke-VmProvisioningPhase1 {
             -ToolchainsFlow  $tcx.Flow `
             -ProvisionerPath $Config.ProvisionerPath `
             -WslDistro       $tcx.WslDistro
+    }
+
+    # Under the ansible flow, reconcile the declared managed block via
+    # provision-env.sh (a no-op under custom-powershell, where provision.ps1's
+    # in-line transport already wrote it). Runs LAST of the three drivers at
+    # every site, mirroring Invoke-VmPostProvisioning's in-line order - an env
+    # value may name a path the files step placed. Own child-process span for
+    # the same clobber reason as its two peers (feature 88 E2). This shape
+    # repeats at every dispatch site in phases 1-3; the engine contract behind
+    # it lives in Set-VmEnvVarsForTest.ps1's header.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision env' -Action {
+        Set-VmEnvVarsForTest `
+            -EnvVarsFlow     $ecx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $ecx.WslDistro
     }
 
     # Router-side white-box checks (forwarding, nftables/dnsmasq, NAT
@@ -369,7 +388,7 @@ function Invoke-VmProvisioningPhase1 {
     # and does not overwrite the real provision's timings. Reached only under
     # custom-powershell; the ansible flow returned above before this rerun.
     Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision (no-op rerun)' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx -Ecx $ecx
     }
 
     Write-Host "Phase 1: verifying no-op rerun did not touch JDK / dotnet artifacts ..." `

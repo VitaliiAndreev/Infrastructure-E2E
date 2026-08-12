@@ -113,19 +113,34 @@ function Invoke-E2EAgentLoop {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $FilesFlow = 'ansible',
 
+        # Selects which engine reconciles each VM's operator-declared `envVars`
+        # managed block during the provisioning phases. 'ansible' (the default)
+        # drives Infrastructure-Vm-Provisioner's
+        # hyper-v/ubuntu/Ansible/ops/provision-env.sh against the
+        # Common-Ansible vm_env_vars / env_vars_report roles, with provision.ps1
+        # standing its in-line transport down via -SkipEnvVars.
+        # 'custom-powershell' opts back in to that in-line transport, which
+        # writes the same block over the SSH channel. Both engines land the same
+        # on-VM end state - the two write byte-identical sentinel-delimited
+        # blocks - so one shared set of env-vars assertions runs across both.
+        # Both are permanent first-class peers.
+        [Parameter()]
+        [ValidateSet('custom-powershell', 'ansible')]
+        [string] $EnvVarsFlow = 'ansible',
+
         # Name of the WSL distro to run the Ansible bridge inside. Passed
         # via `wsl -d <name>` so the agent does not depend on the
         # workstation's WSL default - Docker Desktop's installer silently
         # changes the default to its no-bash `docker-desktop` engine
         # distro, which broke this code path until the explicit -d was
         # added. Required whenever any of UsersFlow / RunnersFlow /
-        # ToolchainsFlow / FilesFlow is 'ansible' - all four default to
-        # 'ansible', so WslDistro is required unless a layer is set to
-        # custom-powershell.
+        # ToolchainsFlow / FilesFlow / EnvVarsFlow is 'ansible' - all five
+        # default to 'ansible', so WslDistro is required unless a layer is set
+        # to custom-powershell.
         # Each ansible
         # wrapper (create/remove-users.sh in Vm-Users, register-runners.sh
-        # in GitHubRunners, provision-toolchains.sh and provision-files.sh in
-        # Vm-Provisioner)
+        # in GitHubRunners, provision-toolchains.sh, provision-files.sh and
+        # provision-env.sh in Vm-Provisioner)
         # self-resolves the Common-Ansible substrate as a sibling checkout,
         # so no Common-Ansible path is threaded through this loop.
         [Parameter()]
@@ -213,6 +228,7 @@ function Invoke-E2EAgentLoop {
         @{ Name = 'RunnersFlow';    PayloadKey = 'runnersFlow';    Session = $RunnersFlow }
         @{ Name = 'ToolchainsFlow'; PayloadKey = 'toolchainsFlow'; Session = $ToolchainsFlow }
         @{ Name = 'FilesFlow';      PayloadKey = 'filesFlow';      Session = $FilesFlow }
+        @{ Name = 'EnvVarsFlow';    PayloadKey = 'envVarsFlow';    Session = $EnvVarsFlow }
     )
 
     # Fail-fast: validate WslDistro at startup so a misconfigured session

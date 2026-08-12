@@ -41,15 +41,17 @@ polling agent that receives signals from GitHub Actions workflows.
   side by side in the owner repo, and the `ansible` wrappers consume the
   `Common-Ansible` substrate (roles + bridge) as a sibling checkout they
   resolve themselves. User reconciliation, user removal, runner
-  registration, jdk / dotnet toolchain installation, and the `files`
-  transport each have two first-class implementations selected at agent
-  startup via `UsersFlow`, `RunnersFlow`, `ToolchainsFlow`, and
-  `FilesFlow`. The last two gate only which engine does that half of
-  provisioning: under `ansible` (the default for both) `provision.ps1` runs
-  with `-SkipToolchains` / `-SkipFiles` and
+  registration, jdk / dotnet toolchain installation, the `files`
+  transport, and the `envVars` managed block each have two first-class
+  implementations selected at agent startup via `UsersFlow`,
+  `RunnersFlow`, `ToolchainsFlow`, `FilesFlow`, and `EnvVarsFlow`. The
+  last three gate only which engine does that third of provisioning:
+  under `ansible` (the default for all) `provision.ps1` runs with
+  `-SkipToolchains` / `-SkipFiles` / `-SkipEnvVars` and
   `Infrastructure-Vm-Provisioner`'s `provision-toolchains.sh` /
-  `provision-files.sh` do the work instead, while `custom-powershell`
-  leaves the in-line PowerShell path doing it inside `provision.ps1`. The
+  `provision-files.sh` / `provision-env.sh` do the work instead, while
+  `custom-powershell` leaves the in-line PowerShell path doing it inside
+  `provision.ps1`. The
   same end-state assertions run for both engines on each axis, so the two
   are measured against one bar.
 
@@ -82,9 +84,9 @@ PowerShell 7+ (`pwsh`).
 - `Common.PowerShell` >= `9.1.0` installed from PSGallery (supplies the
   N-level timing surface the runner-lifecycle run records its phase / part
   breakdown with)
-- All four layers default to `ansible`: `UsersFlow` since feature 02 of
-  `Common-Ansible`, and `RunnersFlow` / `ToolchainsFlow` / `FilesFlow`
-  since their
+- All five layers default to `ansible`: `UsersFlow` since feature 02 of
+  `Common-Ansible`, and `RunnersFlow` / `ToolchainsFlow` / `FilesFlow` /
+  `EnvVarsFlow` since their
   Ansible paths validated. When a layer is `ansible` the agent runs that
   flow inside WSL2 via the owner repo's wrapper, which resolves the
   `Common-Ansible` substrate as a sibling checkout; the Ansible controller
@@ -98,7 +100,9 @@ PowerShell 7+ (`pwsh`).
   `Infrastructure-Vm-Provisioner`'s `provision-toolchains.sh`, or
   `-FilesFlow custom-powershell` to transport the `files` entries via
   `provision.ps1`'s in-line host file server instead of
-  `provision-files.sh`. The flow
+  `provision-files.sh`, or `-EnvVarsFlow custom-powershell` to write the
+  `envVars` managed block via `provision.ps1`'s in-line transport instead
+  of `provision-env.sh`. The flow
   switches are independent: each layer reconciles the same on-VM contract
   regardless of which engine ran it. The
   `ToolchainsFlow=ansible` path reads its desired versions from a
@@ -197,11 +201,12 @@ following in the `E2EConfig` vault:
   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
   "UsersFlow":           "ansible",                                   // optional session default - 'ansible' (default) or 'custom-powershell'; a caller's flow-spec overrides per run
-  "WslDistro":           "Ubuntu-24.04",                              // required when any flow is 'ansible' (all four default to ansible); the WSL2 distro the ansible wrappers run in. Each wrapper (under UsersPath / RunnersPath / ProvisionerPath) self-resolves the Common-Ansible substrate as a sibling checkout, so no Common-Ansible path is configured here. See Common-Ansible README Troubleshooting
+  "WslDistro":           "Ubuntu-24.04",                              // required when any flow is 'ansible' (all five default to ansible); the WSL2 distro the ansible wrappers run in. Each wrapper (under UsersPath / RunnersPath / ProvisionerPath) self-resolves the Common-Ansible substrate as a sibling checkout, so no Common-Ansible path is configured here. See Common-Ansible README Troubleshooting
   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
   "RunnersFlow":         "ansible",                                   // optional session default - 'ansible' (default, register-runners.sh under RunnersPath) or 'custom-powershell' (register-runners.ps1); a caller's flow-spec overrides per run
   "ToolchainsFlow":      "ansible",                                   // optional session default - 'ansible' (default, provision-toolchains.sh under ProvisionerPath) or 'custom-powershell' (the jdk/dotnet reconciler); a caller's flow-spec overrides per run
   "FilesFlow":           "ansible",                                   // optional session default - 'ansible' (default, provision-files.sh under ProvisionerPath) or 'custom-powershell' (provision.ps1's in-line host file server); a caller's flow-spec overrides per run
+  "EnvVarsFlow":         "ansible",                                   // optional session default - 'ansible' (default, provision-env.sh under ProvisionerPath) or 'custom-powershell' (provision.ps1's in-line /etc/environment transport); a caller's flow-spec overrides per run
   "HostTarballCachePath": "C:\\cache\\github-runners",
   "TestVm": {
     "ubuntuVersion":  "24.04",
@@ -329,7 +334,17 @@ run.
    `MARKER_OUTSIDE` survived the re-write outside the block, and
    `/etc/environment`'s mtime advanced past the phase-1 snapshot
    (proving the transport actually rewrote the file rather than
-   skip-unchanged). VM1's `toolchains` block is carried forward
+   skip-unchanged). This phase also carries the **engine hand-off**
+   check, the one place both env engines touch a single host: after
+   the session's engine wrote the block, the opposite one re-applies
+   the same declaration and the applied-assertions run again. They
+   require exactly one `BEGIN` / `END` pair and exactly one line per
+   entry, so an engine that appended its own block instead of
+   replacing the existing one fails here. That is the property that
+   makes the two interchangeable at all, and a single-engine run
+   cannot observe it. It is skipped, with a printed reason, when the
+   opposite engine is Ansible and the session configured no
+   `WslDistro`. VM1's `toolchains` block is carried forward
    unchanged, so this phase doubles as the sections-2/3 idempotence
    check, and VM2 gets the matching "no section-2/3 tools" witness. On
    layers that exist above provisioning, users + runner are re-asserted
@@ -480,15 +495,15 @@ real VM.
 
 Each caller selects which implementation the run exercises through the
 `flow-spec` input - a JSON object
-`{"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"...","filesFlow":"..."}`
+`{"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"...","filesFlow":"...","envVarsFlow":"..."}`
 with
 values `ansible` or `custom-powershell`. The workflow embeds that JSON in
 the GitHub Deployment payload; the polling agent reads it and overrides
-its vault `UsersFlow` / `RunnersFlow` / `ToolchainsFlow` / `FilesFlow`
-defaults for that
+its vault `UsersFlow` / `RunnersFlow` / `ToolchainsFlow` / `FilesFlow` /
+`EnvVarsFlow` defaults for that
 one run, so a repo's PR exercises the path it owns. Any key may be omitted
 - each omitted key falls back to the agent's vault / parameter default,
-which is `ansible` for all four layers:
+which is `ansible` for all five layers:
 
 | Caller repo | `flow-spec` | Tests |
 |---|---|---|
@@ -496,7 +511,7 @@ which is `ansible` for all four layers:
 | `Common-Ansible` (toolchains) | `{"toolchainsFlow":"ansible"}` | `provision-toolchains.sh` installs jdk / dotnet; the shared install / swap / uninstall assertions run against it |
 | `Infrastructure-Vm-Users` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible"}` | the Ansible users flow; runner, toolchain + files layers cascade on the full Ansible stack |
 | `Infrastructure-GitHubRunners` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible"}` | the Ansible runner-registration flow; users, toolchain + files layers cascade |
-| `Infrastructure-Vm-Provisioner` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible"}` | the Ansible toolchain flow via `provision-toolchains.sh` and the Ansible `files` transport via `provision-files.sh`; users + runner layers cascade |
+| `Infrastructure-Vm-Provisioner` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible","filesFlow":"ansible","envVarsFlow":"ansible"}` | the Ansible toolchain flow via `provision-toolchains.sh`, the Ansible `files` transport via `provision-files.sh`, and the Ansible `envVars` reconcile via `provision-env.sh`; users + runner layers cascade |
 
 All four layers default to `ansible`. A caller that omits a key - or a
 manual `workflow_dispatch` left at its default - runs that layer on the
@@ -633,9 +648,9 @@ automatically whenever the run is instrumented (and inert otherwise):
   same-role tasks under one role node whose elapsed is their sum. The bash side
   owns the JSON schema, so grafted nodes match native spans exactly.
 
-Nothing is wired on the E2E side: `Set-VmToolchainsForTest` - and its peer
-`Set-VmFilesForTest`, whose `provision-files.sh` arms the same emitter - is
-unchanged from its plain dispatch. The Common-Ansible bridge enables the callback when
+Nothing is wired on the E2E side: `Set-VmToolchainsForTest` - and its peers
+`Set-VmFilesForTest` / `Set-VmEnvVarsForTest`, whose `provision-files.sh` /
+`provision-env.sh` arm the same emitter - is unchanged from its plain dispatch. The Common-Ansible bridge enables the callback when
 `TIMING_TASKS_OUTPUT_PATH` is set (an env-gated asymmetry documented in its
 `ansible.cfg`), the same posture every other timing emitter takes.
 
@@ -662,7 +677,9 @@ exporting children that ran in sequence on that same path would have the second
 writer clobber the first. `provisioning Phase 1` is exactly that case: it runs
 `provision.ps1` (the baseline provision), then `provision-files.sh` (the Ansible
 `files` transport under `FilesFlow=ansible`), then `provision-toolchains.sh` (the
-Ansible toolchain install under `ToolchainsFlow=ansible`), and then - under
+Ansible toolchain install under `ToolchainsFlow=ansible`), then
+`provision-env.sh` (the Ansible `envVars` reconcile under
+`EnvVarsFlow=ansible`), and then - under
 `ToolchainsFlow=custom-powershell` only - `provision.ps1` a **second** time as a
 no-op idempotency rerun. All are exporting children. Left on one shared path the
 no-op rerun's tree (VM creation `SKIPPED`, disk `SKIPPED`) would overwrite the
@@ -839,7 +856,8 @@ agent/
       Invoke-VmProvisioningTest.ps1          - Provisioning E2E orchestrator: Setup, Test, scenario constants, shared helpers
       Set-VmFilesForTest.ps1                 - Files-flow dispatcher (custom-powershell in-line transport | ansible)
       Set-VmToolchainsForTest.ps1            - Toolchain-flow dispatcher (custom-powershell reconciler | ansible)
-      Invoke-VmProvisionerAnsibleOps.ps1     - Shared WSL shell-out both Vm-Provisioner ops dispatchers above use
+      Set-VmEnvVarsForTest.ps1               - EnvVars-flow dispatcher (custom-powershell in-line transport | ansible)
+      Invoke-VmProvisionerAnsibleOps.ps1     - Shared WSL shell-out all three Vm-Provisioner ops dispatchers above use
       Resolve-RouterIpFromKvp.ps1            - Discovers the router VM's IPv4 via Hyper-V KVP and stamps it on the def
       Start-VmProvisioningTest.ps1           - Manual runner for the provisioning test (no polling agent)
       Start-VmProvisioningTest.bat           - Explorer launcher for Start-VmProvisioningTest.ps1

@@ -41,11 +41,13 @@ Describe 'Invoke-VmProvisioningPhase3 engine dispatch' {
         Mock Invoke-ProvisionerForPhase { }
         Mock Set-VmFilesForTest         { }
         Mock Set-VmToolchainsForTest    { }
+        Mock Set-VmEnvVarsForTest       { }
 
         $script:config = [pscustomobject]@{
             ProvisionerPath = 'C:\fake\Vm-Provisioner'
             ToolchainsFlow  = 'ansible'
             FilesFlow       = 'ansible'
+            EnvVarsFlow     = 'ansible'
             WslDistro       = 'Ubuntu-24.04'
             TestVm          = [pscustomobject]@{
                 ubuntuVersion = '24.04'
@@ -63,18 +65,21 @@ Describe 'Invoke-VmProvisioningPhase3 engine dispatch' {
 
     It 'wraps every sub-phase shell-out in its own child span, files before toolchains' {
         Get-PhaseSpanName | Should -Be @(
-            '3a provision', '3a files', '3a toolchains',
-            '3b provision', '3b files', '3b toolchains')
+            '3a provision', '3a files', '3a toolchains', '3a env',
+            '3b provision', '3b files', '3b toolchains', '3b env')
     }
 
     It 'calls the files dispatcher before the toolchains dispatcher in each sub-phase' {
         $script:calls = [System.Collections.Generic.List[string]]::new()
         Mock Set-VmFilesForTest      { $script:calls.Add('files') }
         Mock Set-VmToolchainsForTest { $script:calls.Add('toolchains') }
+        Mock Set-VmEnvVarsForTest    { $script:calls.Add('env') }
 
         Get-PhaseSpanName | Out-Null
 
-        $script:calls | Should -Be @('files', 'toolchains', 'files', 'toolchains')
+        $script:calls | Should -Be @(
+            'files', 'toolchains', 'env',
+            'files', 'toolchains', 'env')
     }
 
     It 'still runs the files driver on a phase that declares no files' {

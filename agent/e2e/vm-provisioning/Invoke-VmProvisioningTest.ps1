@@ -52,11 +52,13 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\assertions\env-vars\Invoke-EnvVarsRemovedAssertions.ps1"
 . "$PSScriptRoot\Resolve-RouterIpFromKvp.ps1"
 # Engine dispatchers (custom-powershell in-line path vs the Ansible
-# provision-files.sh / provision-toolchains.sh drivers). Dot-sourced before the
-# phase files so they can call both. Files first, matching the order the phases
-# call them in. Each pulls in the shared Invoke-VmProvisionerAnsibleOps itself.
+# provision-files.sh / provision-toolchains.sh / provision-env.sh drivers).
+# Dot-sourced before the phase files so they can call all three. Files first,
+# matching the order the phases call them in. Each pulls in the shared
+# Invoke-VmProvisionerAnsibleOps itself.
 . "$PSScriptRoot\Set-VmFilesForTest.ps1"
 . "$PSScriptRoot\Set-VmToolchainsForTest.ps1"
+. "$PSScriptRoot\Set-VmEnvVarsForTest.ps1"
 # Shell-out timing wrapper (feature 88 C2). Phase 1 wraps its toolchains
 # shell-out in a nested child-process span (feature 88 E2), so the helper
 # must be loaded before the phase files below. Dot-sourced here - the lowest
@@ -766,20 +768,110 @@ function Get-FilesPhaseContext {
     }
 }
 
+# StrictMode-safe read of the session's EnvVarsFlow off $Config. Peer of
+# Resolve-FilesFlow, including the fallback: a Config that omits the property
+# lands on the same engine the agent loop defaults to.
+function Resolve-EnvVarsFlow {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [PSCustomObject] $Config)
+
+    if ($Config.PSObject.Properties['EnvVarsFlow'] -and $Config.EnvVarsFlow) {
+        return $Config.EnvVarsFlow
+    }
+    return 'ansible'
+}
+
+# One-call context bundle each phase resolves at its top, mirroring
+# Get-FilesPhaseContext field for field - and for the same reason it is one
+# field shorter than the toolchain one: the env-vars assertions are
+# engine-agnostic (same block, same markers, same escaping, root:root 0644
+# under either engine), so there is no per-engine assertion param set.
+function Get-EnvVarsPhaseContext {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [PSCustomObject] $Config)
+
+    $flow = Resolve-EnvVarsFlow -Config $Config
+    return [PSCustomObject]@{
+        Flow      = $flow
+        IsAnsible = $flow -eq 'ansible'
+        WslDistro = if ($Config.PSObject.Properties['WslDistro']) {
+            $Config.WslDistro
+        } else { $null }
+    }
+}
+
+# Drives the OPPOSITE env engine once over a block the session's engine
+# already wrote, and returns the flow it ran (or $null when it could not run).
+#
+# What this exists to prove, and why nothing else proves it: the two engines
+# are interchangeable only because they agree on the managed block's format,
+# so each finds and REPLACES the other's block instead of appending a second
+# one. A session runs one engine throughout, so that hand-off never happens on
+# its own - every phase would pass with two engines that quietly disagreed,
+# right up until a real host was driven by both.
+#
+# The assertion is the caller's, and it is the ordinary applied-assertions set:
+# Invoke-EnvVarsAppliedAssertions already requires exactly one BEGIN and one
+# END marker and exactly one line per entry, so a second appended block fails
+# it. Nothing bespoke is needed - only the second engine's run.
+#
+# Each direction is one command, because each engine has a standalone entry
+# point: provision-env.sh on the Ansible side, set-env-vars.ps1 on the
+# PowerShell side. The latter was added for this - before it, the PowerShell
+# engine could only be reached as a step inside a whole provision.ps1 run, so
+# this direction cost a full re-provision to exercise one file write.
+function Invoke-EnvVarsEngineHandoff {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [PSCustomObject] $Config,
+        [Parameter(Mandatory)] [PSCustomObject] $Ecx
+    )
+
+    if ($Ecx.IsAnsible) {
+        # Session wrote with Ansible; hand the block to the in-line PowerShell
+        # transport through its own operator command.
+        Write-Host 'Engine hand-off: re-applying the managed block via the PowerShell engine ...' `
+            -ForegroundColor Magenta
+        & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\set-env-vars.ps1" `
+            -SecretSuffix $script:E2ETestSecretSuffix
+        return 'custom-powershell'
+    }
+
+    # Session wrote in-line; hand the block to the Ansible engine. The driver
+    # needs a bridge, and a custom-powershell session is not obliged to have
+    # configured one - say so and skip rather than failing a run over a
+    # cross-engine check the session was never set up for.
+    if (-not $Ecx.WslDistro) {
+        Write-Host 'Engine hand-off: SKIPPED (no WslDistro configured for this session).' `
+            -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host 'Engine hand-off: re-applying the managed block via the Ansible engine ...' `
+        -ForegroundColor Magenta
+    Set-VmEnvVarsForTest `
+        -EnvVarsFlow     'ansible' `
+        -ProvisionerPath $Config.ProvisionerPath `
+        -WslDistro       $Ecx.WslDistro
+    return 'ansible'
+}
+
 # Runs the provisioner for a phase. Each ansible engine axis stands the
 # matching in-line provision.ps1 step down so the separate Ansible driver owns
 # it instead: -SkipToolchains leaves the toolchains to provision-toolchains.sh
 # (Set-VmToolchainsForTest), -SkipFiles leaves the `files` transport to
-# provision-files.sh (Set-VmFilesForTest). Under custom-powershell
+# provision-files.sh (Set-VmFilesForTest), -SkipEnvVars leaves the managed
+# block to provision-env.sh (Set-VmEnvVarsForTest). Under custom-powershell
 # provision.ps1 does that half in-line. The per-VM desired state lives in
-# VmProvisionerConfig either way - only these two arguments differ by engine, so
-# centralising them keeps every phase's provisioning call identical.
+# VmProvisionerConfig either way - only these three arguments differ by engine,
+# so centralising them keeps every phase's provisioning call identical.
 function Invoke-ProvisionerForPhase {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [PSCustomObject] $Config,
         [Parameter(Mandatory)] [PSCustomObject] $Tcx,
-        [Parameter(Mandatory)] [PSCustomObject] $Fcx
+        [Parameter(Mandatory)] [PSCustomObject] $Fcx,
+        [Parameter(Mandatory)] [PSCustomObject] $Ecx
     )
 
     # Hashtable splat, NOT an array. Array splatting passes every element
@@ -791,6 +883,7 @@ function Invoke-ProvisionerForPhase {
     $provArgs = @{ SecretSuffix = $script:E2ETestSecretSuffix }
     if ($Tcx.IsAnsible) { $provArgs['SkipToolchains'] = $true }
     if ($Fcx.IsAnsible) { $provArgs['SkipFiles']      = $true }
+    if ($Ecx.IsAnsible) { $provArgs['SkipEnvVars']    = $true }
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" @provArgs
 }
 

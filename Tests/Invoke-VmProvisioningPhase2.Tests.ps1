@@ -52,6 +52,8 @@ Describe 'Invoke-VmProvisioningPhase2 engine dispatch' {
         Mock Invoke-ProvisionerForPhase { }
         Mock Set-VmFilesForTest         { }
         Mock Set-VmToolchainsForTest    { }
+        Mock Set-VmEnvVarsForTest       { }
+        Mock Invoke-EnvVarsEngineHandoff { }
 
         # Only the fields the phase reads before its first Mocked boundary:
         # New-VmEntryBase reads TestVm.ubuntuVersion / vmConfigPath / vhdPath
@@ -60,6 +62,7 @@ Describe 'Invoke-VmProvisioningPhase2 engine dispatch' {
             ProvisionerPath = 'C:\fake\Vm-Provisioner'
             ToolchainsFlow  = 'ansible'
             FilesFlow       = 'ansible'
+            EnvVarsFlow     = 'ansible'
             WslDistro       = 'Ubuntu-24.04'
             TestVm          = [pscustomobject]@{
                 ubuntuVersion = '24.04'
@@ -81,8 +84,8 @@ Describe 'Invoke-VmProvisioningPhase2 engine dispatch' {
         # engine contract: files are transported before toolchains install,
         # matching the menu and the in-line PowerShell sequence.
         Get-PhaseSpanName | Should -Be @(
-            '2a provision', '2a files', '2a toolchains',
-            '2b provision', '2b files', '2b toolchains')
+            '2a provision', '2a files', '2a toolchains', '2a env',
+            '2b provision', '2b files', '2b toolchains', '2b env')
     }
 
     It 'calls the files dispatcher before the toolchains dispatcher in each sub-phase' {
@@ -92,10 +95,13 @@ Describe 'Invoke-VmProvisioningPhase2 engine dispatch' {
         $script:calls = [System.Collections.Generic.List[string]]::new()
         Mock Set-VmFilesForTest      { $script:calls.Add('files') }
         Mock Set-VmToolchainsForTest { $script:calls.Add('toolchains') }
+        Mock Set-VmEnvVarsForTest    { $script:calls.Add('env') }
 
         Get-PhaseSpanName | Out-Null
 
-        $script:calls | Should -Be @('files', 'toolchains', 'files', 'toolchains')
+        $script:calls | Should -Be @(
+            'files', 'toolchains', 'env',
+            'files', 'toolchains', 'env')
     }
 
     It 'drives the files dispatcher once per sub-phase with the session flow and distro' {
@@ -108,12 +114,24 @@ Describe 'Invoke-VmProvisioningPhase2 engine dispatch' {
         }
     }
 
-    It 'hands the provisioner both engine contexts on every provision' {
+    It 'hands the provisioner every engine context on every provision' {
         Get-PhaseSpanName | Out-Null
 
+        # Both sub-phase provisions carry all three session contexts.
         Should -Invoke Invoke-ProvisionerForPhase -Exactly -Times 2 -ParameterFilter {
-            $Fcx.IsAnsible -and $Tcx.IsAnsible
+            $Fcx.IsAnsible -and $Tcx.IsAnsible -and $Ecx.IsAnsible
         }
+    }
+
+    It 'runs the engine hand-off once, in 2a only' {
+        # The cross-engine check: after 2a wrote the block with the session's
+        # engine, the opposite one re-applies it and the phase re-asserts.
+        # Once, not per sub-phase - 2b changes nothing about the block, so a
+        # second hand-off would re-prove the same thing at the same cost.
+        Get-PhaseSpanName | Out-Null
+
+        Should -Invoke Invoke-EnvVarsEngineHandoff -Exactly -Times 1 `
+            -ParameterFilter { $Ecx.IsAnsible }
     }
 
     It 'resolves the two engine axes independently' {
@@ -131,7 +149,7 @@ Describe 'Invoke-VmProvisioningPhase2 engine dispatch' {
             $ToolchainsFlow -eq 'custom-powershell'
         }
         Should -Invoke Invoke-ProvisionerForPhase -Exactly -Times 2 -ParameterFilter {
-            $Fcx.IsAnsible -and -not $Tcx.IsAnsible
+            $Fcx.IsAnsible -and -not $Tcx.IsAnsible -and $Ecx.IsAnsible
         }
     }
 

@@ -88,8 +88,18 @@ param(
     [ValidateSet('custom-powershell', 'ansible')]
     [string] $FilesFlow = 'ansible',
 
+    # Which engine reconciles the per-VM `envVars` managed block. 'ansible'
+    # (default) drives Infrastructure-Vm-Provisioner's provision-env.sh
+    # (requires -WslDistro) with provision.ps1 standing its in-line transport
+    # down via -SkipEnvVars; 'custom-powershell' keeps that in-line transport
+    # writing the block. Independent of the other two flows, and the same
+    # env-vars assertions run for both. See Set-VmEnvVarsForTest.
+    [ValidateSet('custom-powershell', 'ansible')]
+    [string] $EnvVarsFlow = 'ansible',
+
     # WSL distro the Ansible bridge runs inside. Required when
-    # -ToolchainsFlow or -FilesFlow is ansible; ignored otherwise. Passed via
+    # -ToolchainsFlow, -FilesFlow or -EnvVarsFlow is ansible; ignored
+    # otherwise. Passed via
     # `wsl -d <name>` so the run does not depend on the workstation's WSL
     # default (Docker Desktop silently moves it to its no-bash
     # 'docker-desktop' distro).
@@ -109,6 +119,7 @@ Invoke-VmProvisioningTest -Config ([PSCustomObject]@{
     ProvisionerPath = $ProvisionerPath
     ToolchainsFlow  = $ToolchainsFlow
     FilesFlow       = $FilesFlow
+    EnvVarsFlow     = $EnvVarsFlow
     WslDistro       = $WslDistro
     TestVm          = [PSCustomObject]@{
         ubuntuVersion         = $UbuntuVersion

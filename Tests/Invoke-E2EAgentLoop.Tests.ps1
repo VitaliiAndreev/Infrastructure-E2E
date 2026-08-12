@@ -591,7 +591,7 @@ Describe 'Invoke-E2EAgentLoop' {
             { Invoke-E2EAgentLoop @params } | Should -Throw '*requires -WslDistro*'
         }
 
-        It "does not require WslDistro when all four flows are 'custom-powershell'" {
+        It "does not require WslDistro when every flow is 'custom-powershell'" {
             Mock Get-GitHubAppToken { $Script:FreshToken }
             Mock Get-PendingDeployment { $null }
             Mock Set-DeploymentStatus {}
@@ -601,6 +601,7 @@ Describe 'Invoke-E2EAgentLoop' {
             $params['RunnersFlow']    = 'custom-powershell'
             $params['ToolchainsFlow'] = 'custom-powershell'
             $params['FilesFlow']      = 'custom-powershell'
+            $params['EnvVarsFlow']    = 'custom-powershell'
             $params.Remove('WslDistro')
 
             { Invoke-E2EAgentLoop @params } | Should -Not -Throw
@@ -809,15 +810,16 @@ Describe 'Invoke-E2EAgentLoop' {
 
             # Session is custom-powershell with no WslDistro, so startup
             # validation passes; the payload's ansible upgrade is caught
-            # per-run instead. All four layers are pinned to
-            # custom-powershell - ToolchainsFlow and FilesFlow default to
-            # ansible, which would otherwise trip the startup gate before the
-            # payload runs.
+            # per-run instead. EVERY layer is pinned to custom-powershell -
+            # ToolchainsFlow, FilesFlow and EnvVarsFlow default to ansible,
+            # which would otherwise trip the startup gate before the payload
+            # runs.
             $params = $Script:BaseParams.Clone()
             $params['UsersFlow']      = 'custom-powershell'
             $params['RunnersFlow']    = 'custom-powershell'
             $params['ToolchainsFlow'] = 'custom-powershell'
             $params['FilesFlow']      = 'custom-powershell'
+            $params['EnvVarsFlow']    = 'custom-powershell'
             $params.Remove('WslDistro')
 
             { Invoke-E2EAgentLoop @params } | Should -Not -Throw
