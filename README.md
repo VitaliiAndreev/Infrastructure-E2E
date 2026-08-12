@@ -857,7 +857,8 @@ agent/
       Set-VmFilesForTest.ps1                 - Files-flow dispatcher (custom-powershell in-line transport | ansible)
       Set-VmToolchainsForTest.ps1            - Toolchain-flow dispatcher (custom-powershell reconciler | ansible)
       Set-VmEnvVarsForTest.ps1               - EnvVars-flow dispatcher (custom-powershell in-line transport | ansible)
-      Invoke-VmProvisionerAnsibleOps.ps1     - Shared WSL shell-out all three Vm-Provisioner ops dispatchers above use
+      Invoke-VmEngineDispatch.ps1            - Shared engine-selection body the three dispatchers above delegate to (what custom-powershell means; the bridge requirement on the ansible branch)
+      Invoke-VmProvisionerAnsibleOps.ps1     - Shared WSL shell-out Invoke-VmEngineDispatch crosses the boundary with
       Resolve-RouterIpFromKvp.ps1            - Discovers the router VM's IPv4 via Hyper-V KVP and stamps it on the def
       Start-VmProvisioningTest.ps1           - Manual runner for the provisioning test (no polling agent)
       Start-VmProvisioningTest.bat           - Explorer launcher for Start-VmProvisioningTest.ps1

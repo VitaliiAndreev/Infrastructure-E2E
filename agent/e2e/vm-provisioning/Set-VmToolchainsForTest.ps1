@@ -28,10 +28,11 @@
     after Initialize-E2EEnvironment and the secret cmdlets are loaded.
 #>
 
-# The WSL shell-out itself, shared with Set-VmFilesForTest. Dot-sourced here
-# rather than by the orchestrator alone so this file's unit tests load their
-# dependency by sourcing only the file under test.
-. "$PSScriptRoot\Invoke-VmProvisionerAnsibleOps.ps1"
+# The shared engine-selection body (what custom-powershell means, and the
+# bridge requirement on the ansible branch), which pulls in the WSL shell-out
+# transitively. Dot-sourced here rather than by the orchestrator alone so this
+# file's unit tests load the whole chain by sourcing only the file under test.
+. "$PSScriptRoot\Invoke-VmEngineDispatch.ps1"
 
 # ---------------------------------------------------------------------------
 # Set-VmToolchainsForTest
@@ -74,24 +75,14 @@ function Set-VmToolchainsForTest {
     # custom-powershell: the reconciler installed the toolchains inside
     # provision.ps1 already (the phase left the javaDevKit / dotnetSdk /
     # dotnetTools blocks in VmProvisionerConfig and did NOT pass
-    # -SkipToolchains). Nothing to drive here.
-    if ($ToolchainsFlow -eq 'custom-powershell') {
-        return
-    }
-
-    if (-not $WslDistro) {
-        throw 'ToolchainsFlow=ansible requires -WslDistro'
-    }
-
-    # provision-toolchains.sh reads the per-VM toolchain fields straight from
-    # VmProvisionerConfig (written by the phase, left untouched by provision.ps1
-    # -SkipToolchains), resolves + stages the artifacts host-side, and runs the
-    # roles per host. There is no separate desired-state vault: VmProvisioner
-    # Config is the single source of truth for both engines - which is why
-    # nothing about the desired state is passed across the boundary here.
-    Invoke-VmProvisionerAnsibleOps `
-        -ProvisionerPath $ProvisionerPath `
-        -WslDistro       $WslDistro `
-        -OpsScript       'provision-toolchains.sh' `
-        -Activity        'toolchains'
+    # -SkipToolchains). The ansible branch drives provision-toolchains.sh,
+    # which reads those same fields from that same secret, then resolves and
+    # stages the artifacts host-side before running the roles per host.
+    Invoke-VmEngineDispatch `
+        -Flow              $ToolchainsFlow `
+        -FlowParameterName 'ToolchainsFlow' `
+        -ProvisionerPath   $ProvisionerPath `
+        -WslDistro         $WslDistro `
+        -OpsScript         'provision-toolchains.sh' `
+        -Activity          'toolchains'
 }

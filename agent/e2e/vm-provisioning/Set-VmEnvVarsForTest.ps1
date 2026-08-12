@@ -36,11 +36,11 @@
     after Initialize-E2EEnvironment and the secret cmdlets are loaded.
 #>
 
-# The WSL shell-out itself, shared with Set-VmFilesForTest /
-# Set-VmToolchainsForTest. Dot-sourced here rather than by the orchestrator
-# alone so this file's unit tests load their dependency by sourcing only the
-# file under test.
-. "$PSScriptRoot\Invoke-VmProvisionerAnsibleOps.ps1"
+# The shared engine-selection body (what custom-powershell means, and the
+# bridge requirement on the ansible branch), which pulls in the WSL shell-out
+# transitively. Dot-sourced here rather than by the orchestrator alone so this
+# file's unit tests load the whole chain by sourcing only the file under test.
+. "$PSScriptRoot\Invoke-VmEngineDispatch.ps1"
 
 # ---------------------------------------------------------------------------
 # Set-VmEnvVarsForTest
@@ -84,23 +84,15 @@ function Set-VmEnvVarsForTest {
 
     # custom-powershell: the in-line transport wrote the block inside
     # provision.ps1 already (the phase left the `envVars` object in
-    # VmProvisionerConfig and did NOT pass -SkipEnvVars). Nothing to drive here.
-    if ($EnvVarsFlow -eq 'custom-powershell') {
-        return
-    }
-
-    if (-not $WslDistro) {
-        throw 'EnvVarsFlow=ansible requires -WslDistro'
-    }
-
-    # provision-env.sh reads the per-VM `envVars` objects straight from
-    # VmProvisionerConfig (written by the phase, left untouched by provision.ps1
-    # -SkipEnvVars). There is no separate desired-state vault: VmProvisionerConfig
-    # is the single source of truth for both engines - which is why nothing
+    # VmProvisionerConfig and did NOT pass -SkipEnvVars). The ansible branch
+    # drives provision-env.sh, which reads the same object from that same
+    # secret - there is no separate desired-state vault, which is why nothing
     # about the desired state is passed across the boundary here.
-    Invoke-VmProvisionerAnsibleOps `
-        -ProvisionerPath $ProvisionerPath `
-        -WslDistro       $WslDistro `
-        -OpsScript       'provision-env.sh' `
-        -Activity        'environment variables'
+    Invoke-VmEngineDispatch `
+        -Flow              $EnvVarsFlow `
+        -FlowParameterName 'EnvVarsFlow' `
+        -ProvisionerPath   $ProvisionerPath `
+        -WslDistro         $WslDistro `
+        -OpsScript         'provision-env.sh' `
+        -Activity          'environment variables'
 }
