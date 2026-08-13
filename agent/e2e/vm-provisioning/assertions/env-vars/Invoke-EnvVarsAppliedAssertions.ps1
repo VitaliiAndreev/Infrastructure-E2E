@@ -134,6 +134,11 @@ function Invoke-EnvVarsAppliedAssertions {
 # `sed -i` with the BEGIN marker as the address and `a` appends on the line
 # after it, so the probe lands inside the span rather than beside it. Anchored
 # with ^...$ so a marker name that is a prefix of another block's cannot match.
+# The address uses sed's `\cREGEXPc` form with `%` as the delimiter so a block
+# name containing `/` needs no escaping. Exactly ONE backslash introduces it -
+# PowerShell does not treat `\` as an escape, so a doubled one would reach sed
+# as `\\%...`, making `\` itself the delimiter and leaving the regex unclosed
+# ("unterminated address regex").
 function Add-EtcEnvironmentBlockProbe {
     [CmdletBinding()]
     param(
@@ -144,7 +149,7 @@ function Add-EtcEnvironmentBlockProbe {
     )
 
     $marker = "# BEGIN $BlockName"
-    $cmd = "sudo sed -i '\\%^$marker`$% a $ProbeLine' /etc/environment"
+    $cmd = "sudo sed -i '\%^$marker`$% a $ProbeLine' /etc/environment"
     $result = Invoke-SshClientCommand -SshClient $SshClient -Command $cmd
     if ($result.ExitStatus -ne 0) {
         throw "Failed to plant the hand-off probe on $VmName " +
