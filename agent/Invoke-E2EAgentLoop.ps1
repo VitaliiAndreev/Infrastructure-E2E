@@ -99,17 +99,48 @@ function Invoke-E2EAgentLoop {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $ToolchainsFlow = 'ansible',
 
+        # Selects which engine transports each VM's operator-declared `files`
+        # entries during the provisioning phases. 'ansible' (the default)
+        # drives Infrastructure-Vm-Provisioner's
+        # hyper-v/ubuntu/Ansible/ops/provision-files.sh against the
+        # Common-Ansible vm_files / files_report roles, pushing bytes through
+        # the SSH channel. 'custom-powershell' opts back in to provision.ps1's
+        # in-line transport, which serves the same files off a host-side
+        # HttpListener the VM curls from. Both engines land the same on-VM end
+        # state, so one shared set of file-transfer assertions runs across both.
+        # Both are permanent first-class peers.
+        [Parameter()]
+        [ValidateSet('custom-powershell', 'ansible')]
+        [string] $FilesFlow = 'ansible',
+
+        # Selects which engine reconciles each VM's operator-declared `envVars`
+        # managed block during the provisioning phases. 'ansible' (the default)
+        # drives Infrastructure-Vm-Provisioner's
+        # hyper-v/ubuntu/Ansible/ops/provision-env.sh against the
+        # Common-Ansible vm_env_vars / env_vars_report roles, with provision.ps1
+        # standing its in-line transport down via -SkipEnvVars.
+        # 'custom-powershell' opts back in to that in-line transport, which
+        # writes the same block over the SSH channel. Both engines land the same
+        # on-VM end state - the two write byte-identical sentinel-delimited
+        # blocks - so one shared set of env-vars assertions runs across both.
+        # Both are permanent first-class peers.
+        [Parameter()]
+        [ValidateSet('custom-powershell', 'ansible')]
+        [string] $EnvVarsFlow = 'ansible',
+
         # Name of the WSL distro to run the Ansible bridge inside. Passed
         # via `wsl -d <name>` so the agent does not depend on the
         # workstation's WSL default - Docker Desktop's installer silently
         # changes the default to its no-bash `docker-desktop` engine
         # distro, which broke this code path until the explicit -d was
         # added. Required whenever any of UsersFlow / RunnersFlow /
-        # ToolchainsFlow is 'ansible' - all three default to 'ansible', so
-        # WslDistro is required unless a layer is set to custom-powershell.
+        # ToolchainsFlow / FilesFlow / EnvVarsFlow is 'ansible' - all five
+        # default to 'ansible', so WslDistro is required unless a layer is set
+        # to custom-powershell.
         # Each ansible
         # wrapper (create/remove-users.sh in Vm-Users, register-runners.sh
-        # in GitHubRunners, provision-toolchains.sh in Vm-Provisioner)
+        # in GitHubRunners, provision-toolchains.sh, provision-files.sh and
+        # provision-env.sh in Vm-Provisioner)
         # self-resolves the Common-Ansible substrate as a sibling checkout,
         # so no Common-Ansible path is threaded through this loop.
         [Parameter()]
@@ -176,6 +207,30 @@ function Invoke-E2EAgentLoop {
         $Deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
     }
 
+    # The engine axes, in the order an operator reads them.
+    #
+    # This table is the single place a fifth axis would be declared alongside
+    # its parameter: the startup fail-fast below, the per-deployment payload
+    # override, the validation sweep, and the Config the test layer receives
+    # are all projections of it. Before it existed each new axis meant the same
+    # edit repeated in five places, which is exactly the kind of parallel edit
+    # one of them eventually gets left out of.
+    #
+    #   Name       - the PowerShell-side property the test layers read off
+    #                $Config (and the parameter it defaults from).
+    #   PayloadKey - the camelCase key the e2e.yml `flow-spec` JSON uses. It is
+    #                a separate GitHub-facing contract shared with the calling
+    #                repos, so it is declared rather than derived from Name.
+    #   Session    - the session default: vault value via Start-E2EAgent, or
+    #                this function's parameter default.
+    $flowAxes = @(
+        @{ Name = 'UsersFlow';      PayloadKey = 'usersFlow';      Session = $UsersFlow }
+        @{ Name = 'RunnersFlow';    PayloadKey = 'runnersFlow';    Session = $RunnersFlow }
+        @{ Name = 'ToolchainsFlow'; PayloadKey = 'toolchainsFlow'; Session = $ToolchainsFlow }
+        @{ Name = 'FilesFlow';      PayloadKey = 'filesFlow';      Session = $FilesFlow }
+        @{ Name = 'EnvVarsFlow';    PayloadKey = 'envVarsFlow';    Session = $EnvVarsFlow }
+    )
+
     # Fail-fast: validate WslDistro at startup so a misconfigured session
     # does not build a VM and only then discover the bridge is
     # unreachable. custom-powershell ignores it; only the ansible flow on
@@ -187,10 +242,8 @@ function Invoke-E2EAgentLoop {
     # (no bash) named in the parameter docs, and surfaces a
     # WslMissingBash: error with a remediation hint instead of letting
     # the bridge fail mid-test with a sparse-PATH error.
-    $ansibleFlows = @()
-    if ($UsersFlow      -eq 'ansible') { $ansibleFlows += 'UsersFlow' }
-    if ($RunnersFlow    -eq 'ansible') { $ansibleFlows += 'RunnersFlow' }
-    if ($ToolchainsFlow -eq 'ansible') { $ansibleFlows += 'ToolchainsFlow' }
+    $ansibleFlows = @(
+        $flowAxes | Where-Object { $_.Session -eq 'ansible' } | ForEach-Object { $_.Name })
     if ($ansibleFlows.Count -gt 0) {
         $flowList = $ansibleFlows -join '/'
         if (-not $WslDistro) {
@@ -272,66 +325,69 @@ function Invoke-E2EAgentLoop {
                 #   spec posts a 'failure' status instead of crashing the
                 #   agent. Guarded property access is required under
                 #   Set-StrictMode -Latest.
-                $effectiveUsersFlow      = $UsersFlow
-                $effectiveRunnersFlow    = $RunnersFlow
-                $effectiveToolchainsFlow = $ToolchainsFlow
+                $effectiveFlows = @{}
+                foreach ($axis in $flowAxes) { $effectiveFlows[$axis.Name] = $axis.Session }
                 if ($deployment.PSObject.Properties['payload'] -and $deployment.payload) {
                     $payload = $deployment.payload
                     # GitHub returns the payload as a parsed object when it
                     # was created as JSON; tolerate a raw JSON string too.
                     if ($payload -is [string]) { $payload = $payload | ConvertFrom-Json }
-                    if ($payload.PSObject.Properties['usersFlow']   -and $payload.usersFlow) {
-                        $effectiveUsersFlow   = $payload.usersFlow
+                    foreach ($axis in $flowAxes) {
+                        # Presence check first: strict mode turns a read of an
+                        # absent property into a terminating error, and an
+                        # explicitly empty key must fall through to the session
+                        # value rather than blanking the axis.
+                        if ($payload.PSObject.Properties[$axis.PayloadKey] -and
+                            $payload.($axis.PayloadKey)) {
+                            $effectiveFlows[$axis.Name] = $payload.($axis.PayloadKey)
+                        }
                     }
-                    if ($payload.PSObject.Properties['runnersFlow'] -and $payload.runnersFlow) {
-                        $effectiveRunnersFlow = $payload.runnersFlow
-                    }
-                    if ($payload.PSObject.Properties['toolchainsFlow'] -and $payload.toolchainsFlow) {
-                        $effectiveToolchainsFlow = $payload.toolchainsFlow
-                    }
-                    Write-Host ("Flow spec from payload: UsersFlow=$effectiveUsersFlow " +
-                        "RunnersFlow=$effectiveRunnersFlow " +
-                        "ToolchainsFlow=$effectiveToolchainsFlow") -ForegroundColor Cyan
+                    Write-Host ('Flow spec from payload: ' + (($flowAxes | ForEach-Object {
+                        "$($_.Name)=$($effectiveFlows[$_.Name])" }) -join ' ')) -ForegroundColor Cyan
                 }
 
                 # Validate the effective flows. An unknown value fails loud
                 # here rather than as a sparse ValidateSet error deep in a
-                # dispatcher. An 'ansible' effective flow re-asserts the
-                # WslDistro prerequisite: the startup check only covered the
-                # session defaults, so a payload that upgrades a layer to
-                # ansible (vault set custom-powershell) must still have a
-                # usable bridge or it would fail mid-test.
-                foreach ($pair in @(
-                        @{ Name = 'usersFlow';      Value = $effectiveUsersFlow },
-                        @{ Name = 'runnersFlow';    Value = $effectiveRunnersFlow },
-                        @{ Name = 'toolchainsFlow'; Value = $effectiveToolchainsFlow })) {
-                    if ($pair.Value -notin @('custom-powershell', 'ansible')) {
-                        throw ("Invalid $($pair.Name) '$($pair.Value)' in deployment " +
+                # dispatcher. The message names the payload key, not the
+                # PowerShell property, because the operator's edit is in the
+                # calling repo's flow-spec JSON.
+                foreach ($axis in $flowAxes) {
+                    $flowValue = $effectiveFlows[$axis.Name]
+                    if ($flowValue -notin @('custom-powershell', 'ansible')) {
+                        throw ("Invalid $($axis.PayloadKey) '$flowValue' in deployment " +
                             "payload; expected 'custom-powershell' or 'ansible'.")
                     }
                 }
-                if ($effectiveUsersFlow -eq 'ansible' -or $effectiveRunnersFlow -eq 'ansible' -or
-                    $effectiveToolchainsFlow -eq 'ansible') {
-                    if (-not $WslDistro) {
-                        throw "Effective flow is 'ansible' but WslDistro is not set."
-                    }
+                # An 'ansible' effective flow re-asserts the WslDistro
+                # prerequisite: the startup check only covered the session
+                # defaults, so a payload that upgrades a layer to ansible
+                # (vault set custom-powershell) must still have a usable bridge
+                # or it would fail mid-test.
+                if ($effectiveFlows.Values -contains 'ansible' -and -not $WslDistro) {
+                    throw "Effective flow is 'ansible' but WslDistro is not set."
                 }
 
-                Invoke-RunnerLifecycleTest -Config ([PSCustomObject]@{
+                # Everything the lifecycle test needs, with the resolved flows
+                # projected on top so a new axis reaches the test layer from
+                # the table alone. [ordered] keeps the shape stable for anyone
+                # dumping the Config while debugging a run.
+                $testConfig = [ordered]@{
                     AppId                 = $AppId
                     RunnersInstallationId = $RunnersInstallationId
                     PrivateKeyPath        = $PrivateKeyPath
                     ProvisionerPath       = $ProvisionerPath
                     UsersPath             = $UsersPath
-                    UsersFlow             = $effectiveUsersFlow
                     WslDistro             = $WslDistro
                     RunnersPath           = $RunnersPath
-                    RunnersFlow           = $effectiveRunnersFlow
-                    ToolchainsFlow        = $effectiveToolchainsFlow
                     HostTarballCachePath  = $HostTarballCachePath
                     Owner                 = $Owner
                     TestVm                = $TestVm
-                })
+                }
+                foreach ($axis in $flowAxes) {
+                    $testConfig[$axis.Name] = $effectiveFlows[$axis.Name]
+                }
+
+                Invoke-RunnerLifecycleTest -Config ([PSCustomObject]$testConfig)
 
                 # The lifecycle run above can span most of the token's
                 # 1-hour life, so re-mint if it is now near expiry before

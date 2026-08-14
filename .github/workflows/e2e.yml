@@ -22,10 +22,13 @@ on:
       flow-spec:
         description: >-
           JSON selecting which implementation each layer runs, e.g.
-          {"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}.
-          Values are 'ansible' or 'custom-powershell'. All three layers
-          default to 'ansible'; omit a key to take its default or set it to
-          'custom-powershell' to exercise the PowerShell engine.
+          {"usersFlow":"ansible","runnersFlow":"ansible",
+          "toolchainsFlow":"ansible","filesFlow":"ansible",
+          "envVarsFlow":"ansible"}.
+          Values are 'ansible' or 'custom-powershell'. All five layers
+          default to 'ansible'; omit a key to take its default (the E2EConfig
+          vault value, else the agent's) or set it to 'custom-powershell' to
+          exercise the PowerShell engine.
         required: false
         type: string
         default: '{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}'
@@ -34,10 +37,12 @@ on:
       flow-spec:
         description: >-
           JSON selecting which implementation each layer runs. Callers pass
-          {"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"..."} with
-          values 'ansible' or 'custom-powershell'. All three layers default
-          to 'ansible'. Any key may be omitted to take that layer's default;
-          set a key to 'custom-powershell' to exercise the PowerShell engine.
+          {"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"...",
+          "filesFlow":"...","envVarsFlow":"..."} with values 'ansible' or
+          'custom-powershell'. All five layers default
+          to 'ansible'. Any key may be omitted to take that layer's default
+          (the E2EConfig vault value, else the agent's); set a key to
+          'custom-powershell' to exercise the PowerShell engine.
         required: false
         type: string
         default: '{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}'
@@ -111,6 +116,10 @@ jobs:
           FLOW_SPEC: ${{ inputs.flow-spec }}
         run: |
           flow_spec="$FLOW_SPEC"
+          # Own-repo PR fallback. It names only the two layers whose default
+          # predates the axis table; the agent defaults every absent key to
+          # 'ansible', so an omitted toolchainsFlow / filesFlow / envVarsFlow
+          # runs the same engine a spelled-out key would.
           if [ -z "$flow_spec" ]; then
             flow_spec='{"usersFlow":"ansible","runnersFlow":"ansible"}'
           fi
@@ -118,7 +127,8 @@ jobs:
           # jq --argjson parses flow_spec as JSON and embeds it as the
           # deployment payload object; an invalid spec fails the step here
           # rather than silently reaching the agent. payload travels back to
-          # the polling agent, which reads usersFlow / runnersFlow from it.
+          # the polling agent, which reads usersFlow / runnersFlow /
+          # toolchainsFlow / filesFlow / envVarsFlow from it.
           # auto_merge:false - no branch merge is relevant here.
           # required_contexts:[] - bypasses commit-status checks that would
           # otherwise block deployment creation on a repo with branch protection.

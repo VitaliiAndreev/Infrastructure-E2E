@@ -120,6 +120,56 @@ function Invoke-EnvVarsAppliedAssertions {
     }
 }
 
+# Helper: plant a line INSIDE the managed block, between the sentinels.
+#
+# Not an assertion - it is the setup half of the engine hand-off case. The
+# hand-off runs the engine that did NOT write the block and then re-checks the
+# block, but every one of those checks passes on a run where that engine did
+# nothing, because the state it verifies was already correct. This gives the
+# second engine work only a real run can do: a line it never declared, sitting
+# where only its own markers say it may write. Removing it requires finding the
+# other engine's sentinels and rewriting what is between them, which is exactly
+# the interchangeability the two engines claim.
+#
+# `sed -i` with the BEGIN marker as the address and `a` appends on the line
+# after it, so the probe lands inside the span rather than beside it. Anchored
+# with ^...$ so a marker name that is a prefix of another block's cannot match.
+# The address uses sed's `\cREGEXPc` form with `%` as the delimiter so a block
+# name containing `/` needs no escaping. Exactly ONE backslash introduces it -
+# PowerShell does not treat `\` as an escape, so a doubled one would reach sed
+# as `\\%...`, making `\` itself the delimiter and leaving the regex unclosed
+# ("unterminated address regex").
+function Add-EtcEnvironmentBlockProbe {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object] $SshClient,
+        [Parameter(Mandatory)] [string] $VmName,
+        [Parameter(Mandatory)] [string] $BlockName,
+        [Parameter(Mandatory)] [string] $ProbeLine
+    )
+
+    $marker = "# BEGIN $BlockName"
+    $cmd = "sudo sed -i '\%^$marker`$% a $ProbeLine' /etc/environment"
+    $result = Invoke-SshClientCommand -SshClient $SshClient -Command $cmd
+    if ($result.ExitStatus -ne 0) {
+        throw "Failed to plant the hand-off probe on $VmName " +
+            "(exit $($result.ExitStatus)): $($result.Error)"
+    }
+
+    # Confirm it actually landed. A sed address that matched nothing exits 0
+    # and changes nothing, which would make the hand-off check vacuous again -
+    # in exactly the way this probe exists to prevent.
+    $verify = Invoke-SshClientCommand -SshClient $SshClient `
+        -Command "grep -c -Fx '$ProbeLine' /etc/environment"
+    $count = if ($verify.ExitStatus -eq 0) { [int]$verify.Output.Trim() } else { 0 }
+    if ($count -ne 1) {
+        throw "Hand-off probe did not land inside block '$BlockName' on $VmName " +
+            "($count occurrence(s); expected 1). The BEGIN marker was not found."
+    }
+    Write-Host "  [OK] hand-off probe planted inside block '$BlockName'" `
+        -ForegroundColor Green
+}
+
 # Helper: ensure /etc/environment ownership is root:root and mode 0644.
 # Extracted so the removed-assertions sibling can reuse the same E1 check.
 function Assert-EtcEnvironmentOwnershipAndMode {

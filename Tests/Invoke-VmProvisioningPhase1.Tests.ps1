@@ -42,6 +42,8 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
         $script:config = [pscustomobject]@{
             ProvisionerPath = 'C:\fake\Vm-Provisioner'
             ToolchainsFlow  = 'ansible'
+            FilesFlow       = 'ansible'
+            EnvVarsFlow     = 'ansible'
             WslDistro       = 'Ubuntu-24.04'
             TestVm          = [pscustomobject]@{
                 ubuntuVersion = '24.04'
@@ -57,7 +59,7 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
         }
 
         # Leaf boundaries the phase crosses, all Mocked so no real work runs.
-        # The two exporting children write a distinguishable marker to whichever
+        # Each exporting child writes a distinguishable marker to whichever
         # opt-in path is active when they run, so the Import mock can hand back
         # the right subtree for each.
         Mock Write-VmProvisionerConfig { }
@@ -66,23 +68,32 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
         Mock Invoke-ProvisionerForPhase {
             Set-Content -LiteralPath $env:TIMING_TREE_OUTPUT_PATH -Value 'provision.ps1'
         }
+        Mock Set-VmFilesForTest {
+            Set-Content -LiteralPath $env:TIMING_TREE_OUTPUT_PATH -Value 'files'
+        }
         Mock Set-VmToolchainsForTest {
             Set-Content -LiteralPath $env:TIMING_TREE_OUTPUT_PATH -Value 'toolchains'
         }
+        Mock Set-VmEnvVarsForTest {
+            Set-Content -LiteralPath $env:TIMING_TREE_OUTPUT_PATH -Value 'env'
+        }
 
         # Route each import to the subtree matching the marker the child wrote,
-        # so provision.ps1's export and the toolchains export are told apart.
+        # so the three exports (provision.ps1, the files driver and the
+        # toolchains driver) are told apart.
         Mock Import-TimingSpanTree {
             param([string] $Path)
             switch ((Get-Content -LiteralPath $Path -Raw).Trim()) {
                 'provision.ps1' { New-ImportedTreeDouble -ChildNames @('boot VM', 'install JDK') }
+                'files'         { New-ImportedTreeDouble -ChildNames @('resolve file entries', 'run playbook') }
                 'toolchains'    { New-ImportedTreeDouble -ChildNames @('run jdk role', 'run dotnet role') }
+                'env'           { New-ImportedTreeDouble -ChildNames @('reconcile block', 'render report') }
                 default         { $null }
             }
         }
     }
 
-    It 'grafts the provision and toolchains exports under their own child spans' {
+    It 'grafts the provision, files, toolchains and env exports under their own child spans' {
         # Drive the phase exactly as Invoke-VmUsersSetup does: inside the
         # 'provisioning Phase 1' part span, threading the same tree in.
         $tree = New-TimingSpanTree -RootName 'run'
@@ -94,29 +105,44 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
 
         # Each shell-out nests under its OWN child span so their exports land on
         # separate output paths - no shared-path clobber. Ansible flow: real
-        # provision + toolchains, and no no-op rerun (the phase returns before
-        # it).
-        $partChildNames = @($part.Children | ForEach-Object { $_.Name })
-        $partChildNames | Should -Contain 'provision'
-        $partChildNames | Should -Contain 'provision toolchains'
+        # provision + files + toolchains + env, and no no-op rerun (the phase
+        # returns before it). Order is load-bearing: files precede toolchains
+        # precede env, matching both the menu's provision-files ->
+        # provision-toolchains -> provision-env sequence and the in-line
+        # dispatch order in Invoke-VmPostProvisioning.
+        @($part.Children | ForEach-Object { $_.Name }) |
+            Should -Be @('provision', 'provision files', 'provision toolchains',
+                'provision env')
 
         $provision = $part.Children | Where-Object { $_.Name -eq 'provision' }
         @($provision.Children | ForEach-Object { $_.Name }) |
             Should -Be @('boot VM', 'install JDK')
 
+        $files = $part.Children | Where-Object { $_.Name -eq 'provision files' }
+        @($files.Children | ForEach-Object { $_.Name }) |
+            Should -Be @('resolve file entries', 'run playbook')
+
         $toolchains = $part.Children | Where-Object { $_.Name -eq 'provision toolchains' }
         @($toolchains.Children | ForEach-Object { $_.Name }) |
             Should -Be @('run jdk role', 'run dotnet role')
+
+        $env = $part.Children | Where-Object { $_.Name -eq 'provision env' }
+        @($env.Children | ForEach-Object { $_.Name }) |
+            Should -Be @('reconcile block', 'render report')
     }
 
-    It 'nests provision, an empty toolchains span, and the no-op rerun under custom-powershell' {
-        # custom-powershell: the dispatcher shells out to nothing, so the
-        # toolchains span renders empty; the phase then runs the no-op
+    It 'nests provision, empty driver spans, and the no-op rerun under custom-powershell' {
+        # custom-powershell: both dispatchers shell out to nothing, so their
+        # spans render empty; the phase then runs the no-op
         # idempotency rerun as its OWN span, kept separate from the real
         # provision so the rerun's tree never clobbers it (the bug this split
         # fixes).
         $script:config.ToolchainsFlow = 'custom-powershell'
+        $script:config.FilesFlow      = 'custom-powershell'
+        $script:config.EnvVarsFlow    = 'custom-powershell'
+        Mock Set-VmFilesForTest { }
         Mock Set-VmToolchainsForTest { }
+        Mock Set-VmEnvVarsForTest { }
 
         $tree = New-TimingSpanTree -RootName 'run'
         Measure-ChildProcessTimingSpan -Tree $tree -Name 'provisioning Phase 1' -Action {
@@ -125,12 +151,20 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
 
         $part = $tree.Root.Children | Where-Object { $_.Name -eq 'provisioning Phase 1' }
 
-        # Real provision, empty toolchains, and the separately-spanned rerun.
-        @($part.Children | ForEach-Object { $_.Name }) |
-            Should -Be @('provision', 'provision toolchains', 'provision (no-op rerun)')
+        # Real provision, empty files + toolchains, and the separately-spanned
+        # rerun.
+        @($part.Children | ForEach-Object { $_.Name }) | Should -Be @(
+            'provision', 'provision files', 'provision toolchains',
+            'provision env', 'provision (no-op rerun)')
+
+        $files = $part.Children | Where-Object { $_.Name -eq 'provision files' }
+        $files.Children.Count | Should -Be 0
 
         $toolchains = $part.Children | Where-Object { $_.Name -eq 'provision toolchains' }
         $toolchains.Children.Count | Should -Be 0
+
+        $env = $part.Children | Where-Object { $_.Name -eq 'provision env' }
+        $env.Children.Count | Should -Be 0
 
         # Both the real provision and the rerun keep their own grafted tree -
         # proof neither overwrote the other.
@@ -168,5 +202,313 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
         $provision.Status | Should -Be 'OK'
         @($provision.Children | ForEach-Object { $_.Name }) |
             Should -Be @('boot VM', 'install JDK')
+    }
+}
+
+Describe 'Invoke-ProvisionerForPhase engine switches' {
+    # The one place either engine axis changes what provision.ps1 is asked to
+    # do. A regression that dropped a switch would leave BOTH engines running
+    # the same half of the work: the in-line transport would copy the files the
+    # Ansible driver is about to copy again, and the E2E would pass anyway
+    # because the end state is identical. Only asserting the arguments catches
+    # it - hence a real script on disk that records what it was bound to,
+    # rather than a Mock of the call.
+
+    BeforeAll {
+        # Drives the function for one engine pairing and returns the parameter
+        # names provision.ps1 actually bound. Defined in BeforeAll, not in the
+        # Describe body: the body runs at discovery, whose scope the It blocks
+        # cannot see.
+        function Get-BoundProvisionerParam {
+            param(
+                [bool] $ToolchainsAnsible,
+                [bool] $FilesAnsible,
+                # Defaults false so the existing pairings below keep asserting
+                # exactly what they always did - a third axis silently
+                # switching on would make 'omits -SkipFiles' pass for the
+                # wrong reason.
+                [bool] $EnvVarsAnsible = $false
+            )
+
+            Invoke-ProvisionerForPhase `
+                -Config $script:provConfig `
+                -Tcx ([pscustomobject]@{ IsAnsible = $ToolchainsAnsible }) `
+                -Fcx ([pscustomobject]@{ IsAnsible = $FilesAnsible }) `
+                -Ecx ([pscustomobject]@{ IsAnsible = $EnvVarsAnsible })
+
+            return @(Get-Content -LiteralPath $script:provArgsPath)
+        }
+    }
+
+    BeforeEach {
+        Mock Write-Host {}
+
+        $script:provRoot = Join-Path $TestDrive 'Vm-Provisioner'
+        $script:provDir  = Join-Path $script:provRoot 'hyper-v\ubuntu\PowerShell'
+        New-Item -Path $script:provDir -ItemType Directory -Force | Out-Null
+
+        # Records the parameter names it was invoked with, one per line, beside
+        # itself. $PSScriptRoot resolves to the script's own directory, so the
+        # test reads the file back without threading a path through the call.
+        $script:provArgsPath = Join-Path $script:provDir 'bound-params.txt'
+        Set-Content -LiteralPath (Join-Path $script:provDir 'provision.ps1') -Value @'
+param(
+    [string] $SecretSuffix,
+    [switch] $SkipToolchains,
+    [switch] $SkipFiles,
+    [switch] $SkipEnvVars
+)
+$PSBoundParameters.Keys |
+    Set-Content -LiteralPath (Join-Path $PSScriptRoot 'bound-params.txt')
+'@
+
+        $script:provConfig = [pscustomobject]@{ ProvisionerPath = $script:provRoot }
+    }
+
+    It 'passes -SkipFiles when the files flow is ansible' {
+        Get-BoundProvisionerParam -ToolchainsAnsible $false -FilesAnsible $true |
+            Should -Contain 'SkipFiles'
+    }
+
+    It 'omits -SkipFiles when the files flow is custom-powershell' {
+        Get-BoundProvisionerParam -ToolchainsAnsible $false -FilesAnsible $false |
+            Should -Not -Contain 'SkipFiles'
+    }
+
+    It 'drives the two axes independently' {
+        # The pairing that proves neither switch is derived from the other:
+        # ansible toolchains with the in-line file transport still running.
+        $bound = Get-BoundProvisionerParam -ToolchainsAnsible $true -FilesAnsible $false
+        $bound | Should -Contain 'SkipToolchains'
+        $bound | Should -Not -Contain 'SkipFiles'
+    }
+
+    It 'passes both switches when both flows are ansible' {
+        $bound = Get-BoundProvisionerParam -ToolchainsAnsible $true -FilesAnsible $true
+        $bound | Should -Contain 'SkipToolchains'
+        $bound | Should -Contain 'SkipFiles'
+    }
+
+    It 'passes -SkipEnvVars when the env flow is ansible' {
+        # Without this the in-line transport writes the block first and the
+        # Ansible driver can only ever find it already correct - the ansible
+        # leg would report green while never authoring a block.
+        Get-BoundProvisionerParam `
+            -ToolchainsAnsible $false -FilesAnsible $false -EnvVarsAnsible $true |
+            Should -Contain 'SkipEnvVars'
+    }
+
+    It 'omits -SkipEnvVars when the env flow is custom-powershell' {
+        Get-BoundProvisionerParam `
+            -ToolchainsAnsible $false -FilesAnsible $false -EnvVarsAnsible $false |
+            Should -Not -Contain 'SkipEnvVars'
+    }
+
+    It 'drives the env axis independently of the other two' {
+        # The pairing the hand-off case relies on: toolchains and files stay
+        # on the session's engines while the env axis alone flips, so the
+        # in-line branch re-runs the env transport and nothing else.
+        $bound = Get-BoundProvisionerParam `
+            -ToolchainsAnsible $true -FilesAnsible $true -EnvVarsAnsible $false
+        $bound | Should -Contain 'SkipToolchains'
+        $bound | Should -Contain 'SkipFiles'
+        $bound | Should -Not -Contain 'SkipEnvVars'
+    }
+
+    It 'passes all three switches when every flow is ansible' {
+        $bound = Get-BoundProvisionerParam `
+            -ToolchainsAnsible $true -FilesAnsible $true -EnvVarsAnsible $true
+        $bound | Should -Contain 'SkipToolchains'
+        $bound | Should -Contain 'SkipFiles'
+        $bound | Should -Contain 'SkipEnvVars'
+    }
+
+    It 'always passes the E2E secret suffix' {
+        # Named, not positional: an array splat would spill it into
+        # provision.ps1's positional slot and fail to bind.
+        Get-BoundProvisionerParam -ToolchainsAnsible $true -FilesAnsible $true |
+            Should -Contain 'SecretSuffix'
+    }
+}
+
+Describe 'Get-FilesPhaseContext' {
+
+    It 'reads the flow off the config' {
+        $fcx = Get-FilesPhaseContext -Config ([pscustomobject]@{
+            FilesFlow = 'custom-powershell'
+            WslDistro = 'Ubuntu-24.04'
+        })
+
+        $fcx.Flow      | Should -Be 'custom-powershell'
+        $fcx.IsAnsible | Should -BeFalse
+        $fcx.WslDistro | Should -Be 'Ubuntu-24.04'
+    }
+
+    It 'falls back to ansible for a config that omits FilesFlow' {
+        # Matches the agent-loop parameter default, so a Config assembled
+        # before this axis existed lands on the same engine either way.
+        $fcx = Get-FilesPhaseContext -Config ([pscustomobject]@{})
+
+        $fcx.Flow      | Should -Be 'ansible'
+        $fcx.IsAnsible | Should -BeTrue
+    }
+
+    It 'yields a null WslDistro for a config that omits it' {
+        # Strict mode makes an unguarded property read throw; the dispatcher
+        # is what rejects the missing distro, with a named error.
+        (Get-FilesPhaseContext -Config ([pscustomobject]@{})).WslDistro |
+            Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-EnvVarsPhaseContext' {
+
+    It 'reads the flow off the config' {
+        $ecx = Get-EnvVarsPhaseContext -Config ([pscustomobject]@{
+            EnvVarsFlow = 'custom-powershell'
+            WslDistro   = 'Ubuntu-24.04'
+        })
+
+        $ecx.Flow      | Should -Be 'custom-powershell'
+        $ecx.IsAnsible | Should -BeFalse
+        $ecx.WslDistro | Should -Be 'Ubuntu-24.04'
+    }
+
+    It 'falls back to ansible for a config that omits EnvVarsFlow' {
+        # Matches the agent-loop parameter default, so a Config assembled
+        # before this axis existed lands on the same engine either way.
+        $ecx = Get-EnvVarsPhaseContext -Config ([pscustomobject]@{})
+
+        $ecx.Flow      | Should -Be 'ansible'
+        $ecx.IsAnsible | Should -BeTrue
+    }
+
+    It 'is not confused by the sibling axes' {
+        # Three near-identical resolvers read three near-identical keys. A
+        # copy-paste that left FilesFlow in the property lookup would make the
+        # env axis silently follow the files one.
+        $ecx = Get-EnvVarsPhaseContext -Config ([pscustomobject]@{
+            FilesFlow      = 'custom-powershell'
+            ToolchainsFlow = 'custom-powershell'
+        })
+
+        $ecx.Flow | Should -Be 'ansible'
+    }
+
+    It 'yields a null WslDistro for a config that omits it' {
+        (Get-EnvVarsPhaseContext -Config ([pscustomobject]@{})).WslDistro |
+            Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-EnvVarsHandoffAvailable' {
+    # Its own predicate because the caller must know the answer BEFORE the
+    # hand-off runs - it plants a probe inside the managed block first, and a
+    # probe planted for a hand-off that then skips would be left on the host.
+
+    It 'is available for an ansible session even with no distro' {
+        # The opposite engine there is set-env-vars.ps1, a script on the
+        # provisioner path - no bridge involved.
+        Test-EnvVarsHandoffAvailable -Ecx ([pscustomobject]@{
+            IsAnsible = $true; WslDistro = $null }) | Should -BeTrue
+    }
+
+    It 'is available for a custom-powershell session that has a distro' {
+        Test-EnvVarsHandoffAvailable -Ecx ([pscustomobject]@{
+            IsAnsible = $false; WslDistro = 'Ubuntu-24.04' }) | Should -BeTrue
+    }
+
+    It 'is unavailable for a custom-powershell session with no distro' {
+        Test-EnvVarsHandoffAvailable -Ecx ([pscustomobject]@{
+            IsAnsible = $false; WslDistro = $null }) | Should -BeFalse
+    }
+}
+
+Describe 'Invoke-EnvVarsEngineHandoff' {
+    # The cross-engine step: whichever engine the session used, this runs the
+    # OTHER one over the same block so the caller can re-assert that it was
+    # adopted rather than duplicated. One command per direction, because each
+    # engine has a standalone entry point.
+
+    BeforeEach {
+        Mock Write-Host {}
+        Mock Invoke-ProvisionerForPhase {}
+        Mock Set-VmEnvVarsForTest {}
+
+        # The PowerShell direction shells out to a real script path, so give
+        # it one that records the parameters it was bound to instead of
+        # provisioning anything.
+        $script:handoffRoot  = Join-Path $TestDrive 'Vm-Provisioner'
+        $script:handoffPsDir = Join-Path $script:handoffRoot 'hyper-v\ubuntu\PowerShell'
+        New-Item -Path $script:handoffPsDir -ItemType Directory -Force | Out-Null
+        # Cleared per test: TestDrive lives for the whole block, so a marker
+        # left by the previous It would make "the PowerShell engine did not
+        # run" assertions pass or fail on stale state.
+        $script:handoffArgsPath = Join-Path $script:handoffPsDir 'bound-params.txt'
+        Remove-Item -LiteralPath $script:handoffArgsPath -Force `
+            -ErrorAction SilentlyContinue
+        Set-Content -LiteralPath (Join-Path $script:handoffPsDir 'set-env-vars.ps1') -Value @'
+param(
+    [string] $SecretSuffix,
+    [string[]] $VmName
+)
+$PSBoundParameters.Keys |
+    Set-Content -LiteralPath (Join-Path $PSScriptRoot 'bound-params.txt')
+'@
+
+        $script:handoffConfig = [pscustomobject]@{
+            ProvisionerPath = $script:handoffRoot
+        }
+    }
+
+    It 'runs the PowerShell engine when the session engine was ansible' {
+        $result = Invoke-EnvVarsEngineHandoff `
+            -Config $script:handoffConfig `
+            -Ecx    ([pscustomobject]@{
+                Flow = 'ansible'; IsAnsible = $true; WslDistro = 'Ubuntu-24.04' })
+
+        $result | Should -Be 'custom-powershell'
+        @(Get-Content -LiteralPath $script:handoffArgsPath) |
+            Should -Contain 'SecretSuffix'
+        Should -Invoke Set-VmEnvVarsForTest -Exactly -Times 0
+    }
+
+    It 'reaches the PowerShell engine without a whole provision run' {
+        # The point of set-env-vars.ps1. Before it existed this direction cost
+        # a full provision.ps1 - vault read, idempotency checks and an SSH
+        # session per VM - to reach one file write.
+        Invoke-EnvVarsEngineHandoff `
+            -Config $script:handoffConfig `
+            -Ecx    ([pscustomobject]@{
+                Flow = 'ansible'; IsAnsible = $true; WslDistro = 'Ubuntu-24.04' })
+
+        Should -Invoke Invoke-ProvisionerForPhase -Exactly -Times 0
+    }
+
+    It 'runs the ansible driver when the session engine was custom-powershell' {
+        $result = Invoke-EnvVarsEngineHandoff `
+            -Config $script:handoffConfig `
+            -Ecx    ([pscustomobject]@{
+                Flow = 'custom-powershell'; IsAnsible = $false; WslDistro = 'Ubuntu-24.04' })
+
+        $result | Should -Be 'ansible'
+        Should -Invoke Set-VmEnvVarsForTest -Exactly -Times 1 -ParameterFilter {
+            $EnvVarsFlow -eq 'ansible'
+        }
+        Test-Path -LiteralPath $script:handoffArgsPath | Should -BeFalse
+    }
+
+    It 'skips (rather than throws) when the opposite engine needs a bridge the session has not got' {
+        # A custom-powershell session is under no obligation to configure a
+        # WSL distro. Failing the whole run over a cross-engine check it was
+        # never set up for would turn an extra assurance into a liability.
+        $result = Invoke-EnvVarsEngineHandoff `
+            -Config $script:handoffConfig `
+            -Ecx    ([pscustomobject]@{
+                Flow = 'custom-powershell'; IsAnsible = $false; WslDistro = $null })
+
+        $result | Should -BeNullOrEmpty
+        Should -Invoke Set-VmEnvVarsForTest -Exactly -Times 0
+        Test-Path -LiteralPath $script:handoffArgsPath | Should -BeFalse
     }
 }

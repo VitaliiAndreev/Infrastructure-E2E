@@ -50,6 +50,15 @@ function Invoke-VmProvisioningPhase3 {
     }
 
     $tcx = Get-ToolchainPhaseContext -Config $Config
+    # Independent file-transport engine axis - see the note in phase 1. VM1
+    # declares no `files` from 3a onward, so the ansible driver runs against an
+    # empty per-host entry list; vm_files is a no-op on one, which makes these
+    # passes the "declared nothing, transported nothing" check.
+    $fcx = Get-FilesPhaseContext -Config $Config
+    # Environment-block engine for this run, a third independent axis. Peer of
+    # $fcx; see phase 1 for why the managed block is the one artefact both
+    # engines can own in turn.
+    $ecx = Get-EnvVarsPhaseContext -Config $Config
     $jdkParams        = $tcx.Params.Jdk
     $sdkParams        = $tcx.Params.Sdk
     $toolParams       = $tcx.Params.Tools
@@ -120,7 +129,18 @@ function Invoke-VmProvisioningPhase3 {
     Write-Host 'Phase 3a: provisioning (version change on VM1) ...' `
         -ForegroundColor Magenta
     Measure-ChildProcessTimingSpan -Tree $Tree -Name '3a provision' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx -Ecx $ecx
+    }
+
+    # Ansible flow: runs against VM1's now-empty `files` declaration - the
+    # driver must complete cleanly rather than fail on a host with nothing to
+    # transport (no-op under custom-powershell). Precedes the toolchains driver,
+    # as at every site.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '3a files' -Action {
+        Set-VmFilesForTest `
+            -FilesFlow       $fcx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $fcx.WslDistro
     }
 
     # Ansible flow: drive the version-change by reconciling VM1's per-VM
@@ -131,6 +151,13 @@ function Invoke-VmProvisioningPhase3 {
             -ToolchainsFlow  $tcx.Flow `
             -ProvisionerPath $Config.ProvisionerPath `
             -WslDistro       $tcx.WslDistro
+    }
+
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '3a env' -Action {
+        Set-VmEnvVarsForTest `
+            -EnvVarsFlow     $ecx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $ecx.WslDistro
     }
 
     Write-Host "Phase 3a: verifying version change on $($Vm1Def.vmName) ..." `
@@ -236,7 +263,16 @@ function Invoke-VmProvisioningPhase3 {
     Write-Host 'Phase 3b: provisioning (uninstall via empty list on VM1) ...' `
         -ForegroundColor Magenta
     Measure-ChildProcessTimingSpan -Tree $Tree -Name '3b provision' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx -Ecx $ecx
+    }
+
+    # Ansible flow: same empty-declaration pass as 3a (no-op under
+    # custom-powershell).
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '3b files' -Action {
+        Set-VmFilesForTest `
+            -FilesFlow       $fcx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $fcx.WslDistro
     }
 
     # Ansible flow: drive the uninstall by reconciling VM1's (now empty) per-VM
@@ -247,6 +283,13 @@ function Invoke-VmProvisioningPhase3 {
             -ToolchainsFlow  $tcx.Flow `
             -ProvisionerPath $Config.ProvisionerPath `
             -WslDistro       $tcx.WslDistro
+    }
+
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '3b env' -Action {
+        Set-VmEnvVarsForTest `
+            -EnvVarsFlow     $ecx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $ecx.WslDistro
     }
 
     Write-Host "Phase 3b: verifying remove-via-empty on $($Vm1Def.vmName) ..." `

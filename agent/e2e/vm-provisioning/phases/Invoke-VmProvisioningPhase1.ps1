@@ -73,6 +73,14 @@ function Invoke-VmProvisioningPhase1 {
     # from the deployment payload). $tcx bundles the flow, the branch boolean,
     # the engine-specific assertion params, and the WSL distro.
     $tcx = Get-ToolchainPhaseContext -Config $Config
+    # File-transport engine for this run, resolved the same way. Separate axis
+    # from $tcx: a session can drive files through Ansible and toolchains
+    # through the reconciler, or the reverse.
+    $fcx = Get-FilesPhaseContext -Config $Config
+    # Environment-block engine for this run, a third independent axis: the
+    # managed block is the one artefact BOTH engines write in the same place
+    # and the same format, so a session may drive it either way.
+    $ecx = Get-EnvVarsPhaseContext -Config $Config
     # Splat-ready engine params for this phase's assertions (reconciler
     # defaults under custom-powershell; the common-ansible store + prefix
     # under ansible). Splatting needs simple variables, hence the locals.
@@ -134,10 +142,12 @@ function Invoke-VmProvisioningPhase1 {
             version = $script:PowerShellVersion
         }
     }
-    # Mixed files array: one single entry + one bulk entry. JSON order is
-    # preserved by the per-entry dispatch in Invoke-VmPostProvisioning;
-    # asserting both forms in one provision run covers the "mixed dispatch"
-    # acceptance criterion from docs/dev/implementation/07 - ci jars.
+    # Mixed files array: one single entry + one bulk entry. The same per-VM
+    # array feeds both engines - custom-powershell dispatches it per entry
+    # inside Invoke-VmPostProvisioning; ansible leaves it for provision-files.sh
+    # (provision.ps1 runs -SkipFiles). Asserting both forms in one provision run
+    # covers the "mixed dispatch" acceptance criterion from
+    # docs/dev/implementation/07 - ci jars.
     $entry.files = @(
         [ordered]@{
             source = $script:FileTransferSource
@@ -170,7 +180,7 @@ function Invoke-VmProvisioningPhase1 {
     # the report then shows VM creation SKIPPED and buries the ~real creation
     # cost as unaccounted parent time (feature 88 E2).
     Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx -Ecx $ecx
     }
 
     # provision.ps1 ran in its own scope and the discovered router IP
@@ -179,6 +189,22 @@ function Invoke-VmProvisioningPhase1 {
     # post-condition checks below, and phases 2 / 3 - the same Vm1Def
     # carries forward) has a populated ipAddress to dial.
     Resolve-RouterIpFromKvp -RouterVmDef $Vm1Def._RouterVm
+
+    # Under the ansible flow, transport the declared `files` entries via
+    # provision-files.sh (a no-op under custom-powershell, where provision.ps1's
+    # in-line transport already copied them). Runs BEFORE the toolchains driver
+    # at every site, mirroring both the menu's provision-files ->
+    # provision-toolchains order and Invoke-VmPostProvisioning's in-line order.
+    #
+    # Own child-process span for the same reason the toolchains driver has one:
+    # provision-files.sh exports its own timing tree, so without a fresh output
+    # path the two exporting children would clobber each other (feature 88 E2).
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision files' -Action {
+        Set-VmFilesForTest `
+            -FilesFlow       $fcx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $fcx.WslDistro
+    }
 
     # Under the ansible flow, install the toolchains via
     # provision-toolchains.sh now that provision.ps1 has brought the router
@@ -198,6 +224,21 @@ function Invoke-VmProvisioningPhase1 {
             -ToolchainsFlow  $tcx.Flow `
             -ProvisionerPath $Config.ProvisionerPath `
             -WslDistro       $tcx.WslDistro
+    }
+
+    # Under the ansible flow, reconcile the declared managed block via
+    # provision-env.sh (a no-op under custom-powershell, where provision.ps1's
+    # in-line transport already wrote it). Runs LAST of the three drivers at
+    # every site, mirroring Invoke-VmPostProvisioning's in-line order - an env
+    # value may name a path the files step placed. Own child-process span for
+    # the same clobber reason as its two peers (feature 88 E2). This shape
+    # repeats at every dispatch site in phases 1-3; the engine contract behind
+    # it lives in Set-VmEnvVarsForTest.ps1's header.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision env' -Action {
+        Set-VmEnvVarsForTest `
+            -EnvVarsFlow     $ecx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $ecx.WslDistro
     }
 
     # Router-side white-box checks (forwarding, nftables/dnsmasq, NAT
@@ -347,7 +388,7 @@ function Invoke-VmProvisioningPhase1 {
     # and does not overwrite the real provision's timings. Reached only under
     # custom-powershell; the ansible flow returned above before this rerun.
     Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision (no-op rerun)' -Action {
-        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx -Fcx $fcx -Ecx $ecx
     }
 
     Write-Host "Phase 1: verifying no-op rerun did not touch JDK / dotnet artifacts ..." `

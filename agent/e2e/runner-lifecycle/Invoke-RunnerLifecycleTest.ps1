@@ -17,6 +17,10 @@
 # forwards $Config.RunnersFlow into this single switch point.
 . "$PSScriptRoot\Set-VmRunnersForTest.ps1"
 
+# Shared GitHub-side poll used by both the post-register check below and the
+# post-re-provision check in Invoke-RunnerStillOnlineAssertions.ps1.
+. "$PSScriptRoot\Wait-RunnerOnlineRegistration.ps1"
+
 # Lightweight re-verification of the runner after a re-provision (phase 2
 # or phase 3). Confirms the systemd service is still active and the
 # runner still appears 'online' in GitHub.
@@ -517,32 +521,15 @@ function Invoke-RunnerLifecycleTest {
             # the first or second attempt.
             Write-Host 'Verifying runner online via GitHub API ...' -ForegroundColor Magenta
             $githubUrl = $configEntry[0].githubUrl
-            $parts     = $githubUrl.TrimEnd('/') -split '/'
-            $apiOwner  = $parts[-2]
-            $apiRepo   = $parts[-1]
 
-            $maxAttempts  = 10
-            $delaySeconds = 5
-            $registration = $null
-
-            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-                $response = Invoke-GitHubApi `
-                    -Token    $runnersToken `
-                    -Endpoint "repos/$apiOwner/$apiRepo/actions/runners?per_page=100"
-                $registration = @($response.runners) |
-                    Where-Object { $_.name -eq $runnerName } |
-                    Select-Object -First 1
-
-                if ($null -ne $registration -and $registration.status -eq 'online') {
-                    break
-                }
-
-                $statusMsg = if ($null -eq $registration) { 'not found' }
-                             else { $registration.status }
-                Write-Host ("  [attempt $attempt/$maxAttempts] Runner status: " +
-                    "$statusMsg - waiting ${delaySeconds}s ...") -ForegroundColor Yellow
-                Start-Sleep -Seconds $delaySeconds
-            }
+            # Ten attempts: a cold runner can take the better part of a minute
+            # to open its websocket, and this is the one place that waits for
+            # it to happen at all.
+            $registration = Wait-RunnerOnlineRegistration `
+                -RunnersToken $runnersToken `
+                -GithubUrl    $githubUrl `
+                -RunnerName   $runnerName `
+                -MaxAttempts  10
 
             if ($null -eq $registration) {
                 throw "Runner '$runnerName' not found in GitHub API for $githubUrl."
