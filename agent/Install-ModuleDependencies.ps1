@@ -112,9 +112,13 @@ if ($_loaded.Count -ne 1 -or $_loaded[0].Version -ne $_common.Version) {
 # duplicate Get-PendingDeployment exporter that shadows
 # Infrastructure.GitHub's -CreatedSince version. Don't relax below 4.0.0.
 Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets' -MinimumVersion '4.0.0'
-# 1.1.0 provides the -CreatedSince parameter the polling loop passes to
-# Get-PendingDeployment; older copies lack it.
-Invoke-ModuleInstall -ModuleName 'Infrastructure.GitHub'  -MinimumVersion '1.1.0'
+# 1.2.1 makes Invoke-GitHubApi retry transient network failures. Without it a
+# DNS hiccup on the host resolver aborts a whole run: the runner-online poll
+# in Invoke-RunnerLifecycleTest retries the runner's *status*, not the API
+# call, so a "No such host is known" throws straight out of the loop.
+# It also supersedes the older 1.1.0 floor, which was there for the
+# -CreatedSince parameter the polling loop passes to Get-PendingDeployment.
+Invoke-ModuleInstall -ModuleName 'Infrastructure.GitHub'  -MinimumVersion '1.2.1'
 Invoke-ModuleInstall -ModuleName 'Infrastructure.HyperV'  -MinimumVersion '0.11.0'
 # Infrastructure.Wsl supplies Invoke-WslShell + Assert-Wsl2Ready /
 # Assert-WslHasBash. The agent's Ansible flow needs all three (one

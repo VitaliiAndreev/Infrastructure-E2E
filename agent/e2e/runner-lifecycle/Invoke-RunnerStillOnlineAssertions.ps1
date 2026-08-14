@@ -2,7 +2,8 @@
 .NOTES
     Do not run this file directly. Dot-sourced by Invoke-RunnerLifecycleTest.ps1
     after Common.PowerShell (for Invoke-SshClientCommand) and
-    Infrastructure.GitHub (for Invoke-GitHubApi) are loaded.
+    Infrastructure.GitHub (for Invoke-GitHubApi) are loaded, and after
+    Wait-RunnerOnlineRegistration.ps1 (which the GitHub-side check calls).
 #>
 
 # ---------------------------------------------------------------------------
@@ -60,33 +61,14 @@ function Invoke-RunnerStillOnlineAssertions {
     Write-Host "  [OK] runner service '$serviceName' still active." `
         -ForegroundColor Green
 
-    # 2) GitHub-side status still online. Short re-check loop covers a
-    #    transient websocket flap without re-implementing the full
-    #    backoff used at registration time.
-    $parts    = $GithubUrl.TrimEnd('/') -split '/'
-    $apiOwner = $parts[-2]
-    $apiRepo  = $parts[-1]
-
-    $maxAttempts  = 3
-    $delaySeconds = 5
-    $registration = $null
-
-    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-        $response = Invoke-GitHubApi `
-            -Token    $RunnersToken `
-            -Endpoint "repos/$apiOwner/$apiRepo/actions/runners?per_page=100"
-        $registration = @($response.runners) |
-            Where-Object { $_.name -eq $RunnerName } |
-            Select-Object -First 1
-
-        if ($null -ne $registration -and $registration.status -eq 'online') {
-            break
-        }
-
-        if ($attempt -lt $maxAttempts) {
-            Start-Sleep -Seconds $delaySeconds
-        }
-    }
+    # 2) GitHub-side status still online. Three attempts rather than the ten
+    #    used at registration time: the runner is expected to be online
+    #    already, so this only has to ride out a brief websocket flap.
+    $registration = Wait-RunnerOnlineRegistration `
+        -RunnersToken $RunnersToken `
+        -GithubUrl    $GithubUrl `
+        -RunnerName   $RunnerName `
+        -MaxAttempts  3
 
     if ($null -eq $registration) {
         throw "Runner '$RunnerName' missing from GitHub API after re-provision."
